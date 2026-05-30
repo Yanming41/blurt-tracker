@@ -32,8 +32,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.blurt.tracker.service.TrackerService
+import com.blurt.tracker.service.WatchdogWorker
 import com.blurt.tracker.ui.DashboardScreen
 import com.blurt.tracker.util.Config
+import com.blurt.tracker.util.Heartbeat
 import com.blurt.tracker.util.PermissionHelper
 import com.blurt.tracker.util.PingClient
 import com.blurt.tracker.util.PingResult
@@ -75,7 +77,11 @@ private fun AppRoot() {
     val allGranted = hasUsage && hasLoc && hasNotif
 
     LaunchedEffect(allGranted) {
-        if (allGranted) TrackerService.start(ctx)
+        if (allGranted) {
+            Heartbeat.setExpected(ctx, true)
+            TrackerService.start(ctx)
+            WatchdogWorker.schedule(ctx)
+        }
     }
 
     when {

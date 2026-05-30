@@ -22,6 +22,7 @@ import com.blurt.tracker.MainActivity
 import com.blurt.tracker.data.AppRecord
 import com.blurt.tracker.data.LocationRecord
 import com.blurt.tracker.data.TrackerDatabase
+import com.blurt.tracker.util.Heartbeat
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -39,6 +40,7 @@ class TrackerService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var appJob: Job? = null
     private var locJob: Job? = null
+    private val pingServer = PingServer(PING_PORT)
 
     private val db by lazy { TrackerDatabase.get(this) }
     private val dao by lazy { db.trackerDao() }
@@ -52,15 +54,29 @@ class TrackerService : Service() {
     override fun onCreate() {
         super.onCreate()
         startInForeground()
+        Heartbeat.beat(this) // 启动即心跳
         startAppLoop()
         startLocationLoop()
+        pingServer.safeStart()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Heartbeat.beat(this)
         return START_STICKY
     }
 
+    /** 用户从最近任务里把App划掉时触发。系统不会调用 onDestroy。 */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        ServiceAliveNotifier.notifyKilled(this, reason = "你从最近任务里把App滑掉了")
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        pingServer.safeStop()
+        // 如果用户期望服务在跑，但服务被销毁了 -> 发通知
+        if (Heartbeat.isExpected(this)) {
+            ServiceAliveNotifier.notifyKilled(this, reason = "系统回收了后台服务")
+        }
         scope.cancel()
         super.onDestroy()
     }
@@ -108,6 +124,7 @@ class TrackerService : Service() {
         appJob?.cancel()
         appJob = scope.launch {
             while (true) {
+                Heartbeat.beat(this@TrackerService) // 每次循环都心跳
                 runCatching { sampleForegroundApp() }
                 delay(60_000)
             }
@@ -223,6 +240,7 @@ class TrackerService : Service() {
     companion object {
         private const val CHANNEL_ID = "tracker_fg"
         private const val NOTIF_ID = 1001
+        const val PING_PORT = 8000
 
         fun start(context: Context) {
             val i = Intent(context, TrackerService::class.java)
