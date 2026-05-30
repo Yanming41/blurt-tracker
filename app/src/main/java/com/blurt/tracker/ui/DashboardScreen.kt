@@ -22,6 +22,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -37,7 +38,7 @@ import java.util.Locale
 @Composable
 fun DashboardScreen(vm: DashboardViewModel = viewModel()) {
     val state by vm.state.collectAsState()
-    val timeFmt = remember1 { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
     Scaffold(
         topBar = {
@@ -155,7 +156,3 @@ private fun formatMinutes(min: Long): String {
     return if (h > 0) "${h}小时${m}分钟" else "${min}分钟"
 }
 
-// 兼容包装：避免引入额外 import
-@Composable
-private inline fun <T> remember1(crossinline producer: () -> T): T =
-    androidx.compose.runtime.remember { producer() }
