@@ -1,26 +1,35 @@
-"""今日概览页：4 张统计卡 + 按小时分组的时间线 + AI 总结。"""
+"""今日概览页 — Fluent 风格统计卡 + 时间线 + AI 总结。"""
 from __future__ import annotations
 
+import time
 from datetime import date, datetime, timedelta
 from itertools import groupby
-from typing import Iterable
+from typing import Optional
 
+import requests
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
-    QGridLayout,
     QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
     QSizePolicy,
-    QTextEdit,
+    QSpacerItem,
     QVBoxLayout,
     QWidget,
 )
-from sqlalchemy import func
+from qfluentwidgets import (
+    BodyLabel,
+    CaptionLabel,
+    CardWidget,
+    InfoBar,
+    InfoBarPosition,
+    PrimaryPushButton,
+    ScrollArea,
+    StrongBodyLabel,
+    SubtitleLabel,
+    TitleLabel,
+)
 
+from core.config import get_config
 from core.database import (
     AppRecordMobile,
     AppRecordWindows,
@@ -30,11 +39,10 @@ from core.database import (
 )
 from core.scheduler import generate_summary
 
-from .common import StatCard, format_duration, source_icon, source_tag_html
-from .theme import BORDER, CARD_BG, TEXT, TEXT_DIM
+from .common import format_duration, source_icon
 
 
-REFRESH_INTERVAL_MS = 30_000
+REFRESH_MS = 30_000
 
 
 class _SummaryWorker(QThread):
@@ -49,72 +57,137 @@ class _SummaryWorker(QThread):
             self.failed.emit(str(e))
 
 
-class DashboardPage(QWidget):
+class _StatCard(CardWidget):
+    """顶部 4 张统计卡之一。"""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(96)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(2)
+        self.title_lbl = BodyLabel(title)
+        self.title_lbl.setStyleSheet("color: #666;")
+        self.value_lbl = TitleLabel("--")
+        self.sub_lbl = CaptionLabel("")
+        self.sub_lbl.setStyleSheet("color: #888;")
+        lay.addWidget(self.title_lbl)
+        lay.addWidget(self.value_lbl)
+        lay.addWidget(self.sub_lbl)
+
+    def set_value(self, value: str, sub: str = "") -> None:
+        self.value_lbl.setText(value)
+        self.sub_lbl.setText(sub)
+
+
+class _EntryCard(CardWidget):
+    """时间线里的一条记录。"""
+
+    def __init__(self, ts: datetime, source: str, content: str, duration: str, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(52)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setSpacing(12)
+
+        time_lbl = CaptionLabel(ts.strftime("%H:%M"))
+        time_lbl.setFixedWidth(44)
+        icon_lbl = BodyLabel(source_icon(source))
+        icon_lbl.setFixedWidth(22)
+        content_lbl = BodyLabel(content)
+        content_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        dur_lbl = CaptionLabel(duration)
+        dur_lbl.setStyleSheet("color: #666;")
+        dur_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        lay.addWidget(time_lbl)
+        lay.addWidget(icon_lbl)
+        lay.addWidget(content_lbl, 1)
+        lay.addWidget(dur_lbl)
+
+
+class DashboardInterface(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(18, 18, 18, 18)
-        outer.setSpacing(14)
+        self.setObjectName("dashboardInterface")
 
-        # ----- 顶部统计卡片 -----
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(24, 24, 24, 24)
+        outer.setSpacing(16)
+
+        outer.addWidget(TitleLabel("今日概览"))
+
+        # ---- 顶部统计卡 ----
         cards_row = QHBoxLayout()
         cards_row.setSpacing(12)
-        self.card_screen = StatCard("今日屏幕时间")
-        self.card_apps = StatCard("使用App数量")
-        self.card_locs = StatCard("位置记录条数")
-        self.card_tasks = StatCard("任务完成数")
-        for c in (self.card_screen, self.card_apps, self.card_locs, self.card_tasks):
+        self.card_phone = _StatCard("📱 手机")
+        self.card_screen = _StatCard("⏱️ 屏幕时间")
+        self.card_loc = _StatCard("📍 位置")
+        self.card_task = _StatCard("✅ 任务")
+        for c in (self.card_phone, self.card_screen, self.card_loc, self.card_task):
             cards_row.addWidget(c, 1)
         outer.addLayout(cards_row)
 
-        # ----- 中间时间线 -----
+        # ---- 时间线 ----
         timeline_header = QHBoxLayout()
-        title = QLabel("今日时间线")
-        title.setStyleSheet(f"color: {TEXT}; font-size: 15px; font-weight: bold;")
-        refresh_btn = QPushButton("手动刷新")
-        refresh_btn.clicked.connect(self.refresh)
-        timeline_header.addWidget(title)
+        timeline_header.addWidget(SubtitleLabel("今日时间线"))
         timeline_header.addStretch(1)
+        refresh_btn = PrimaryPushButton("手动刷新")
+        refresh_btn.clicked.connect(self.refresh)
         timeline_header.addWidget(refresh_btn)
         outer.addLayout(timeline_header)
 
-        self.timeline_scroll = QScrollArea()
-        self.timeline_scroll.setWidgetResizable(True)
-        self.timeline_scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll = ScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
         self.timeline_container = QWidget()
+        self.timeline_container.setStyleSheet("background: transparent;")
         self.timeline_layout = QVBoxLayout(self.timeline_container)
         self.timeline_layout.setContentsMargins(0, 0, 0, 0)
-        self.timeline_layout.setSpacing(0)
+        self.timeline_layout.setSpacing(6)
         self.timeline_layout.addStretch(1)
-        self.timeline_scroll.setWidget(self.timeline_container)
-        outer.addWidget(self.timeline_scroll, 1)
+        self.scroll.setWidget(self.timeline_container)
+        outer.addWidget(self.scroll, 1)
 
-        # ----- 底部总结 -----
+        # ---- 底部总结卡 ----
+        self.summary_card = CardWidget()
+        sc_lay = QVBoxLayout(self.summary_card)
+        sc_lay.setContentsMargins(18, 14, 18, 14)
+        sc_lay.setSpacing(8)
         sum_header = QHBoxLayout()
-        sum_title = QLabel("今日总结")
-        sum_title.setStyleSheet(f"color: {TEXT}; font-size: 15px; font-weight: bold;")
-        self.gen_btn = QPushButton("立即生成")
-        self.gen_btn.setProperty("accent", True)
-        self.gen_btn.clicked.connect(self._generate_now)
-        sum_header.addWidget(sum_title)
+        sum_header.addWidget(StrongBodyLabel("🤖 今日总结"))
         sum_header.addStretch(1)
+        self.gen_btn = PrimaryPushButton("立即生成")
+        self.gen_btn.clicked.connect(self._generate_now)
         sum_header.addWidget(self.gen_btn)
-        outer.addLayout(sum_header)
+        sc_lay.addLayout(sum_header)
+        self.summary_lbl = BodyLabel("今日总结将在23:30自动生成")
+        self.summary_lbl.setWordWrap(True)
+        self.summary_lbl.setMinimumHeight(60)
+        sc_lay.addWidget(self.summary_lbl)
+        outer.addWidget(self.summary_card)
 
-        self.summary_view = QTextEdit()
-        self.summary_view.setReadOnly(True)
-        self.summary_view.setFixedHeight(140)
-        outer.addWidget(self.summary_view)
-
-        # ----- 定时刷新 -----
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
-        self._timer.start(REFRESH_INTERVAL_MS)
+        self._timer.start(REFRESH_MS)
         self.refresh()
 
-    # ---------- 数据加载 ----------
+    # ---------- 加载 ----------
 
     def refresh(self) -> None:
+        try:
+            self._refresh_inner()
+        except Exception as e:
+            InfoBar.error(
+                title="刷新失败",
+                content=str(e),
+                duration=3000,
+                position=InfoBarPosition.TOP,
+                parent=self,
+            )
+
+    def _refresh_inner(self) -> None:
         today = date.today()
         start = datetime.combine(today, datetime.min.time())
         end = start + timedelta(days=1)
@@ -131,14 +204,27 @@ class DashboardPage(QWidget):
             ).all()
             summary = db.query(DailySummary).filter_by(date=today.isoformat()).one_or_none()
 
-        # 卡片数据
-        total_secs = sum(int((w.end_time - w.start_time).total_seconds()) for w in windows) \
-                   + sum(int((m.end_time - m.start_time).total_seconds()) for m in mobiles)
-        self.card_screen.set_value(format_duration(total_secs))
-        unique_apps = {w.app_name for w in windows} | {m.package_name for m in mobiles}
-        self.card_apps.set_value(str(len(unique_apps)))
-        self.card_locs.set_value(str(len(locs)))
-        self.card_tasks.set_value("--")  # 任务模块尚未实现
+        # 顶部卡片
+        total = sum(int((w.end_time - w.start_time).total_seconds()) for w in windows) \
+              + sum(int((m.end_time - m.start_time).total_seconds()) for m in mobiles)
+        self.card_screen.set_value(format_duration(total))
+        self.card_loc.set_value(str(len(locs)), "条记录")
+        self.card_task.set_value("0/0", "暂未实现")
+
+        # 手机卡：用 status 接口探测
+        cfg = get_config()
+        ip = cfg.get("phone_ip", "").strip()
+        if not ip:
+            self.card_phone.set_value("未配置", "请到设置页填写IP")
+        else:
+            try:
+                t0 = time.perf_counter()
+                r = requests.get(f"http://{ip}:{cfg.get('phone_port', 8000)}/ping", timeout=3)
+                r.raise_for_status()
+                dt = int((time.perf_counter() - t0) * 1000)
+                self.card_phone.set_value("✅ 在线", f"{dt}ms")
+            except requests.RequestException:
+                self.card_phone.set_value("● 离线", "未连接到手机")
 
         # 时间线
         entries = []
@@ -156,12 +242,11 @@ class DashboardPage(QWidget):
 
         # 总结
         if summary:
-            self.summary_view.setPlainText(summary.summary_text)
+            self.summary_lbl.setText(summary.summary_text)
         else:
-            self.summary_view.setPlainText("今日总结将在23:30生成")
+            self.summary_lbl.setText("今日总结将在23:30自动生成")
 
     def _render_timeline(self, entries: list[tuple[datetime, str, str, str]]) -> None:
-        # 清掉旧内容
         while self.timeline_layout.count() > 0:
             item = self.timeline_layout.takeAt(0)
             w = item.widget()
@@ -169,71 +254,43 @@ class DashboardPage(QWidget):
                 w.deleteLater()
 
         if not entries:
-            empty = QLabel("今天还没有记录")
-            empty.setStyleSheet(f"color: {TEXT_DIM}; padding: 24px;")
+            empty = SubtitleLabel("📭 今天还没有记录")
             empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet("color: #999; padding: 40px;")
             self.timeline_layout.addWidget(empty)
             self.timeline_layout.addStretch(1)
             return
 
         for hour, group in groupby(entries, key=lambda e: e[0].hour):
-            header = QLabel(f"{hour:02d}:00")
-            header.setStyleSheet(
-                f"color: {TEXT_DIM}; font-size: 12px; font-weight: bold;"
-                f"padding: 8px 4px 4px 4px; border-top: 1px solid {BORDER};"
-            )
-            self.timeline_layout.addWidget(header)
+            hdr = StrongBodyLabel(f"{hour:02d}:00")
+            hdr.setStyleSheet("color: #555; padding: 8px 2px 4px 2px;")
+            self.timeline_layout.addWidget(hdr)
             for ts, source, content, duration in group:
-                self.timeline_layout.addWidget(self._entry_row(ts, source, content, duration))
+                self.timeline_layout.addWidget(_EntryCard(ts, source, content, duration))
         self.timeline_layout.addStretch(1)
-
-    @staticmethod
-    def _entry_row(ts: datetime, source: str, content: str, duration: str) -> QWidget:
-        w = QWidget()
-        lay = QHBoxLayout(w)
-        lay.setContentsMargins(8, 6, 8, 6)
-        lay.setSpacing(10)
-
-        time_lbl = QLabel(ts.strftime("%H:%M"))
-        time_lbl.setFixedWidth(48)
-        time_lbl.setStyleSheet(f"color: {TEXT_DIM};")
-
-        icon_lbl = QLabel(source_icon(source))
-        icon_lbl.setFixedWidth(24)
-
-        content_lbl = QLabel(content)
-        content_lbl.setStyleSheet(f"color: {TEXT};")
-        content_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-        dur_lbl = QLabel(duration)
-        dur_lbl.setStyleSheet(f"color: {TEXT_DIM};")
-        dur_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        lay.addWidget(time_lbl)
-        lay.addWidget(icon_lbl)
-        lay.addWidget(content_lbl, 1)
-        lay.addWidget(dur_lbl)
-        return w
 
     # ---------- 生成总结 ----------
 
     def _generate_now(self) -> None:
         self.gen_btn.setEnabled(False)
         self.gen_btn.setText("生成中…")
-        self.summary_view.setPlainText("正在调用 Ollama 生成总结，请稍候…")
+        self.summary_lbl.setText("正在调用 Ollama 生成总结，请稍候…")
         worker = _SummaryWorker(self)
-        worker.done.connect(self._on_summary_done)
-        worker.failed.connect(self._on_summary_failed)
+        worker.done.connect(self._on_done)
+        worker.failed.connect(self._on_failed)
         worker.finished.connect(worker.deleteLater)
-        self._summary_worker = worker  # 保持引用
+        self._worker = worker
         worker.start()
 
-    def _on_summary_done(self, text: str) -> None:
-        self.summary_view.setPlainText(text)
+    def _on_done(self, text: str) -> None:
+        self.summary_lbl.setText(text)
         self.gen_btn.setEnabled(True)
         self.gen_btn.setText("立即生成")
+        InfoBar.success("已生成", "今日总结已更新", duration=2500,
+                        position=InfoBarPosition.TOP, parent=self)
 
-    def _on_summary_failed(self, err: str) -> None:
-        QMessageBox.warning(self, "生成失败", err)
+    def _on_failed(self, err: str) -> None:
         self.gen_btn.setEnabled(True)
         self.gen_btn.setText("立即生成")
+        InfoBar.error("生成失败", err, duration=4000,
+                      position=InfoBarPosition.TOP, parent=self)

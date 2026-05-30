@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_INTERVAL_SECONDS = 60
 
+# 过滤掉这些系统/外壳进程，避免在时间线上刷屏
+IGNORED_PROCESSES = {
+    "explorer.exe",
+    "searchhost.exe",
+    "shellexperiencehost.exe",
+    "startmenuexperiencehost.exe",
+    "textinputhost.exe",
+    "lockapp.exe",
+    "applicationframehost.exe",
+    "dwm.exe",
+    "sihost.exe",
+}
+
 
 def _get_active_window() -> Optional[tuple[str, str]]:
     """Return (app_name, window_title) for the current foreground window."""
@@ -77,6 +90,11 @@ class WindowMonitor:
                 self._stop.wait(self.interval)
                 continue
             app_name, title = sample
+
+            # 跳过系统外壳进程和空标题
+            if app_name.lower() in IGNORED_PROCESSES or not title.strip():
+                self._stop.wait(self.interval)
+                continue
 
             if app_name == current_app and title == current_title:
                 last_seen = now

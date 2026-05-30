@@ -1,19 +1,27 @@
-"""时间线页：日期选择 + 手机/电脑混合时间线（带彩色标签）。"""
+"""时间线页 — 日期选择 + 完整记录（含手机/电脑彩色徽标）。"""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import QDate, QTimer, Qt
 from PySide6.QtWidgets import (
-    QDateEdit,
     QFrame,
     QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
+)
+from qfluentwidgets import (
+    BodyLabel,
+    CalendarPicker,
+    CaptionLabel,
+    CardWidget,
+    InfoBadge,
+    InfoLevel,
+    PrimaryPushButton,
+    ScrollArea,
+    SubtitleLabel,
+    TitleLabel,
 )
 
 from core.database import (
@@ -23,57 +31,100 @@ from core.database import (
     SessionLocal,
 )
 
-from .common import source_icon, source_tag_html
-from .theme import BORDER, TEXT, TEXT_DIM
+from .common import source_icon
 
 
-REFRESH_INTERVAL_MS = 30_000
+REFRESH_MS = 30_000
 
 
-class TimelinePage(QWidget):
+def _badge_for(source: str) -> InfoBadge:
+    if source == "mobile":
+        return InfoBadge.info("手机")
+    if source == "windows":
+        return InfoBadge.success("电脑")
+    return InfoBadge.attension("位置") if hasattr(InfoBadge, "attension") else InfoBadge.info("位置")
+
+
+class _Row(CardWidget):
+    def __init__(self, ts: datetime, source: str, content: str, sub: str, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(58)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setSpacing(10)
+
+        time_lbl = CaptionLabel(ts.strftime("%H:%M"))
+        time_lbl.setFixedWidth(48)
+        icon_lbl = BodyLabel(source_icon(source))
+        icon_lbl.setFixedWidth(22)
+
+        badge = _badge_for(source)
+
+        text = content if not sub else f"{content}  —  {sub[:80]}"
+        content_lbl = BodyLabel(text)
+        content_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+        lay.addWidget(time_lbl)
+        lay.addWidget(icon_lbl)
+        lay.addWidget(badge)
+        lay.addWidget(content_lbl, 1)
+
+
+class TimelineInterface(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("timelineInterface")
+
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(18, 18, 18, 18)
-        outer.setSpacing(12)
+        outer.setContentsMargins(24, 24, 24, 24)
+        outer.setSpacing(14)
+
+        outer.addWidget(TitleLabel("时间线"))
 
         header = QHBoxLayout()
-        title = QLabel("完整时间线")
-        title.setStyleSheet(f"color: {TEXT}; font-size: 15px; font-weight: bold;")
-        self.date_edit = QDateEdit()
-        self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDate(QDate.currentDate())
-        self.date_edit.dateChanged.connect(self.refresh)
-        refresh_btn = QPushButton("手动刷新")
-        refresh_btn.clicked.connect(self.refresh)
-        header.addWidget(title)
+        header.addWidget(BodyLabel("选择日期："))
+        self.picker = CalendarPicker()
+        self.picker.setDate(QDate.currentDate())
+        self.picker.dateChanged.connect(lambda *_: self.refresh())
+        header.addWidget(self.picker)
         header.addStretch(1)
-        header.addWidget(QLabel("日期："))
-        header.addWidget(self.date_edit)
+        refresh_btn = PrimaryPushButton("手动刷新")
+        refresh_btn.clicked.connect(self.refresh)
         header.addWidget(refresh_btn)
         outer.addLayout(header)
 
-        self.scroll = QScrollArea()
+        self.scroll = ScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
         self.container = QWidget()
+        self.container.setStyleSheet("background: transparent;")
         self.layout_v = QVBoxLayout(self.container)
         self.layout_v.setContentsMargins(0, 0, 0, 0)
-        self.layout_v.setSpacing(0)
+        self.layout_v.setSpacing(6)
         self.layout_v.addStretch(1)
         self.scroll.setWidget(self.container)
         outer.addWidget(self.scroll, 1)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
-        self._timer.start(REFRESH_INTERVAL_MS)
+        self._timer.start(REFRESH_MS)
         self.refresh()
 
     def _selected_date(self) -> date:
-        d = self.date_edit.date()
+        d = self.picker.getDate()
+        if d is None or not d.isValid():
+            return date.today()
         return date(d.year(), d.month(), d.day())
 
     def refresh(self) -> None:
+        try:
+            self._refresh_inner()
+        except Exception:
+            # 不让 GUI 因为查库失败而崩
+            pass
+
+    def _refresh_inner(self) -> None:
         target = self._selected_date()
         start = datetime.combine(target, datetime.min.time())
         end = start + timedelta(days=1)
@@ -96,7 +147,6 @@ class TimelinePage(QWidget):
 
         entries.sort(key=lambda e: e[0])
 
-        # 清空
         while self.layout_v.count() > 0:
             item = self.layout_v.takeAt(0)
             w = item.widget()
@@ -104,49 +154,13 @@ class TimelinePage(QWidget):
                 w.deleteLater()
 
         if not entries:
-            empty = QLabel("这一天没有记录")
-            empty.setStyleSheet(f"color: {TEXT_DIM}; padding: 24px;")
+            empty = SubtitleLabel("📭 这一天还没有记录")
             empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet("color: #999; padding: 40px;")
             self.layout_v.addWidget(empty)
             self.layout_v.addStretch(1)
             return
 
         for ts, source, content, sub in entries:
-            self.layout_v.addWidget(self._row(ts, source, content, sub))
+            self.layout_v.addWidget(_Row(ts, source, content, sub))
         self.layout_v.addStretch(1)
-
-    @staticmethod
-    def _row(ts: datetime, source: str, content: str, sub: str) -> QWidget:
-        w = QWidget()
-        lay = QHBoxLayout(w)
-        lay.setContentsMargins(8, 6, 8, 6)
-        lay.setSpacing(10)
-
-        time_lbl = QLabel(ts.strftime("%H:%M"))
-        time_lbl.setFixedWidth(50)
-        time_lbl.setStyleSheet(f"color: {TEXT_DIM};")
-
-        icon_lbl = QLabel(source_icon(source))
-        icon_lbl.setFixedWidth(24)
-
-        tag_lbl = QLabel()
-        tag_lbl.setText(source_tag_html(source))
-        tag_lbl.setTextFormat(Qt.RichText)
-        tag_lbl.setFixedWidth(56)
-
-        text = content if not sub else f"{content}  —  {sub[:80]}"
-        content_lbl = QLabel(text)
-        content_lbl.setStyleSheet(f"color: {TEXT};")
-        content_lbl.setWordWrap(False)
-        content_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-        lay.addWidget(time_lbl)
-        lay.addWidget(icon_lbl)
-        lay.addWidget(tag_lbl)
-        lay.addWidget(content_lbl, 1)
-
-        # 分割线
-        line = QFrame(w)
-        line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet(f"color: {BORDER};")
-        return w

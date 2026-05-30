@@ -21,8 +21,8 @@ env/
 .env
 
 # Desktop runtime data
-desktop/*.db
-desktop/*.sqlite
+desktop/**/*.db
+desktop/**/*.sqlite
 desktop/data/
 desktop/logs/
 
