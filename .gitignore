@@ -1,13 +1,30 @@
+# Android / Gradle
 *.iml
 .gradle/
-/local.properties
-/.idea/
+**/local.properties
+.idea/
 .DS_Store
-/build/
+**/build/
 /captures/
 .externalNativeBuild/
 .cxx/
 *.keystore
 
-# Module build outputs
-**/build/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+
+# Desktop runtime data
+desktop/*.db
+desktop/*.sqlite
+desktop/data/
+desktop/logs/
+
+# OS
+Thumbs.db
