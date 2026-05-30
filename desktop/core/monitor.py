@@ -20,7 +20,7 @@ except ImportError:  # non-Windows dev environments
     win32gui = None
     win32process = None
 
-from database import AppRecordWindows, SessionLocal
+from .database import AppRecordWindows, SessionLocal
 
 logger = logging.getLogger(__name__)
 

@@ -8,18 +8,27 @@ import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from database import (
+from .database import (
     AppRecordMobile,
     AppRecordWindows,
     DailySummary,
     LocationRecord,
     SessionLocal,
 )
+from .config import get_config
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "qwen2.5:3b"
+
+
+def _ollama_generate_url() -> str:
+    base = get_config().get("ollama_url", "http://localhost:11434").rstrip("/")
+    return f"{base}/api/generate"
+
+
+# Kept for backward compatibility with imports elsewhere.
+OLLAMA_URL = _ollama_generate_url()
 
 
 def _gather_day_data(target: date) -> tuple[str, int]:
@@ -76,7 +85,7 @@ def _gather_day_data(target: date) -> tuple[str, int]:
 
 def _call_ollama(prompt: str) -> str:
     resp = requests.post(
-        OLLAMA_URL,
+        _ollama_generate_url(),
         json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
         timeout=120,
     )
