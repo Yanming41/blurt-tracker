@@ -1,7 +1,6 @@
 package com.blurt.tracker
 
 import android.Manifest
-import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -9,12 +8,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -22,13 +24,20 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.blurt.tracker.service.TrackerService
 import com.blurt.tracker.ui.DashboardScreen
+import com.blurt.tracker.util.Config
 import com.blurt.tracker.util.PermissionHelper
+import com.blurt.tracker.util.PingClient
+import com.blurt.tracker.util.PingResult
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -44,12 +53,11 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun AppRoot() {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val ctx = LocalContext.current
     var hasUsage by remember { mutableStateOf(PermissionHelper.hasUsageStatsPermission(ctx)) }
     var hasLoc by remember { mutableStateOf(PermissionHelper.hasLocationPermission(ctx)) }
     var hasNotif by remember { mutableStateOf(PermissionHelper.hasNotificationPermission(ctx)) }
-
-    val activity = ctx as ComponentActivity
+    var hasDesktop by remember { mutableStateOf(Config.isConfigured(ctx)) }
 
     val locLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -70,33 +78,27 @@ private fun AppRoot() {
         if (allGranted) TrackerService.start(ctx)
     }
 
-    if (!allGranted) {
-        PermissionScreen(
+    when {
+        !allGranted -> PermissionScreen(
             hasUsage = hasUsage,
             hasLoc = hasLoc,
             hasNotif = hasNotif,
-            onRequestUsage = {
-                PermissionHelper.openUsageAccessSettings(ctx)
-            },
-            onRefreshUsage = {
-                hasUsage = PermissionHelper.hasUsageStatsPermission(ctx)
-            },
-            onRequestLoc = {
-                locLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
-            },
+            onRequestUsage = { PermissionHelper.openUsageAccessSettings(ctx) },
+            onRefreshUsage = { hasUsage = PermissionHelper.hasUsageStatsPermission(ctx) },
+            onRequestLoc = { locLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION) },
             onRequestNotif = {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                } else {
-                    hasNotif = true
-                }
+                } else hasNotif = true
             },
-            onRequestBattery = {
-                PermissionHelper.requestIgnoreBatteryOptimizations(ctx)
+            onRequestBattery = { PermissionHelper.requestIgnoreBatteryOptimizations(ctx) },
+        )
+        !hasDesktop -> ConnectDesktopScreen(
+            onConnected = {
+                hasDesktop = true
             },
         )
-    } else {
-        DashboardScreen()
+        else -> DashboardScreen()
     }
 }
 
@@ -173,4 +175,87 @@ private fun PermRow(
             Button(onClick = onClick) { Text(actionText) }
         }
     }
+}
+
+@Composable
+private fun ConnectDesktopScreen(onConnected: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var ip by remember { mutableStateOf(Config.getDesktopIp(ctx) ?: "") }
+    var testing by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<TestResult?>(null) }
+
+    Scaffold { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("4. 连接电脑", style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold)
+            Text("填入电脑端的 Tailscale IP，确保电脑端服务已启动。",
+                style = MaterialTheme.typography.bodyMedium)
+
+            Spacer(Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = ip,
+                onValueChange = {
+                    ip = it.trim()
+                    result = null
+                },
+                label = { Text("Tailscale IP") },
+                placeholder = { Text("例如 100.64.x.x") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    enabled = ip.isNotBlank() && !testing,
+                    onClick = {
+                        testing = true
+                        result = null
+                        scope.launch {
+                            val r = PingClient.ping(ip)
+                            result = when (r) {
+                                is PingResult.Ok -> TestResult.Ok(r.latencyMs)
+                                is PingResult.Error -> TestResult.Fail(r.message)
+                            }
+                            testing = false
+                        }
+                    },
+                ) { Text(if (testing) "测试中…" else "测试连接") }
+            }
+
+            when (val r = result) {
+                is TestResult.Ok -> {
+                    Text(
+                        "✅ 连接成功，电脑端在线（${r.latencyMs}ms）",
+                        color = Color(0xFF2E7D32),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Button(onClick = {
+                        Config.setDesktopIp(ctx, ip)
+                        onConnected()
+                    }) { Text("保存并进入主界面") }
+                }
+                is TestResult.Fail -> Text(
+                    "❌ 连接失败，请检查 IP 或 Tailscale（${r.reason}）",
+                    color = Color(0xFFC62828),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                null -> Unit
+            }
+        }
+    }
+}
+
+private sealed interface TestResult {
+    data class Ok(val latencyMs: Long) : TestResult
+    data class Fail(val reason: String) : TestResult
 }

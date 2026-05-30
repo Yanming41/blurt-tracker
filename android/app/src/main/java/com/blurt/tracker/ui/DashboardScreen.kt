@@ -11,25 +11,34 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.blurt.tracker.data.AppRecord
 import com.blurt.tracker.data.LocationRecord
+import com.blurt.tracker.util.Config
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -38,6 +47,7 @@ import java.util.Locale
 @Composable
 fun DashboardScreen(vm: DashboardViewModel = viewModel()) {
     val state by vm.state.collectAsState()
+    val desktop by vm.desktop.collectAsState()
     val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
     Scaffold(
@@ -51,6 +61,13 @@ fun DashboardScreen(vm: DashboardViewModel = viewModel()) {
                 .padding(padding)
                 .padding(16.dp),
         ) {
+            DesktopStatusCard(
+                state = desktop,
+                onRetest = { vm.pingNow() },
+                onIpChanged = { vm.onDesktopIpChanged() },
+            )
+            Spacer(Modifier.height(12.dp))
+
             SummaryCard(totalMillis = state.totalScreenMillis, onClear = { vm.clearToday() })
             Spacer(Modifier.height(12.dp))
 
@@ -71,6 +88,95 @@ fun DashboardScreen(vm: DashboardViewModel = viewModel()) {
             }
         }
     }
+}
+
+@Composable
+private fun DesktopStatusCard(
+    state: DesktopUiState,
+    onRetest: () -> Unit,
+    onIpChanged: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    var showEdit by remember { mutableStateOf(false) }
+
+    Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(2.dp)) {
+        Column(Modifier.padding(16.dp)) {
+            Text("🖥️ 游戏本", style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = state.ip ?: "未配置",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(end = 12.dp),
+                )
+                StatusBadge(state.status)
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showEdit = true }) { Text("修改IP") }
+                Button(onClick = onRetest) { Text("重新测试") }
+            }
+        }
+    }
+
+    if (showEdit) {
+        EditIpDialog(
+            initialIp = state.ip ?: "",
+            onDismiss = { showEdit = false },
+            onSave = { ip ->
+                Config.setDesktopIp(ctx, ip)
+                showEdit = false
+                onIpChanged()
+            },
+        )
+    }
+}
+
+@Composable
+private fun StatusBadge(status: DesktopStatus) {
+    val (text, color) = when (status) {
+        is DesktopStatus.Online -> "✅ 在线 ${status.latencyMs}ms" to Color(0xFF2E7D32)
+        is DesktopStatus.Offline -> "❌ 离线 (${status.reason})" to Color(0xFFC62828)
+        DesktopStatus.Pinging -> "… 测试中" to Color(0xFF555555)
+        DesktopStatus.Unknown -> "… 等待测试" to Color(0xFF555555)
+        DesktopStatus.NotConfigured -> "⚠️ 未配置 IP" to Color(0xFFB26A00)
+    }
+    Text(text = text, color = color, style = MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.Medium)
+}
+
+@Composable
+private fun EditIpDialog(
+    initialIp: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var ip by remember { mutableStateOf(initialIp) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("修改电脑 IP") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = ip,
+                    onValueChange = { ip = it.trim() },
+                    label = { Text("Tailscale IP") },
+                    placeholder = { Text("例如 100.64.x.x") },
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = ip.isNotBlank(),
+                onClick = { onSave(ip) },
+            ) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
 
 @Composable
@@ -155,4 +261,3 @@ private fun formatMinutes(min: Long): String {
     val m = min % 60
     return if (h > 0) "${h}小时${m}分钟" else "${min}分钟"
 }
-

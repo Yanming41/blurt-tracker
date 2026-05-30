@@ -127,6 +127,51 @@
 
 ---
 
+## 8. GET `/ping`
+手机端连接检测专用，**客户端超时 3 秒**。
+
+响应 `200`：
+```json
+{
+  "status": "online",
+  "device": "游戏本",
+  "timestamp": 1717056000,
+  "version": "0.1.0"
+}
+```
+
+---
+
+## 9. GET `/status`
+设备详细状态，手机端点击状态卡片时展示。
+
+响应 `200`：
+```json
+{
+  "status": "online",
+  "monitor_running": true,
+  "database_ok": true,
+  "records_today": 42,
+  "last_record_time": "14:30",
+  "ollama_available": true,
+  "disk_free_gb": 120.5
+}
+```
+- `last_record_time` 在今日没有任何记录时为 `null`
+- `disk_free_gb` 为数据库所在磁盘剩余空间（GB）
+
+---
+
+## 连接失败排查建议（手机端 UI 提示文案）
+当 `/ping` 超时或返回失败时，手机端展示：
+
+1. 确认电脑端程序正在运行
+2. 确认两台设备都开启了 Tailscale
+3. 确认 IP 地址填写正确
+4. 检查电脑防火墙是否放行 8000 端口
+
+---
+
 ## 错误格式
 所有 4xx/5xx 错误遵循 FastAPI 默认格式：
 ```json

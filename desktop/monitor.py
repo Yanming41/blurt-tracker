@@ -61,6 +61,9 @@ class WindowMonitor:
     def stop(self) -> None:
         self._stop.set()
 
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive() and not self._stop.is_set()
+
     def _run(self) -> None:
         current_app: Optional[str] = None
         current_title: Optional[str] = None
