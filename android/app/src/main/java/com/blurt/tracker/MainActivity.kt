@@ -61,9 +61,13 @@ private fun AppRoot() {
     var hasNotif by remember { mutableStateOf(PermissionHelper.hasNotificationPermission(ctx)) }
     var hasDesktop by remember { mutableStateOf(Config.isConfigured(ctx)) }
 
+    // 同时申请 FINE + COARSE：Android 12+ 系统弹的对话框会让用户选「精确 / 大致」
     val locLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted -> hasLoc = granted }
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        hasLoc = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+    }
 
     val notifLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -91,7 +95,14 @@ private fun AppRoot() {
             hasNotif = hasNotif,
             onRequestUsage = { PermissionHelper.openUsageAccessSettings(ctx) },
             onRefreshUsage = { hasUsage = PermissionHelper.hasUsageStatsPermission(ctx) },
-            onRequestLoc = { locLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION) },
+            onRequestLoc = {
+                locLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                    ),
+                )
+            },
             onRequestNotif = {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -144,7 +155,7 @@ private fun PermissionScreen(
             }
 
             PermRow(
-                label = "2. 位置权限（粗略）",
+                label = "2. 位置权限（精确）",
                 granted = hasLoc,
                 actionText = "申请权限",
                 onClick = onRequestLoc,

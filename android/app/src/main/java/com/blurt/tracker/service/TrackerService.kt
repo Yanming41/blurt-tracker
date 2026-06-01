@@ -194,29 +194,63 @@ class TrackerService : Service() {
         }
     }
 
+    /**
+     * 智能切换策略：
+     *  1. 先用 BALANCED（不开 GPS，~10mA）拿一个粗略位置
+     *  2. 跟上一条记录比，距离 > MOVE_THRESHOLD_M 说明用户在动
+     *     → 再用 HIGH_ACCURACY（开 GPS）拿一次精准位置覆盖
+     *  3. 没动 / 没有历史记录 / GPS 拿不到 → 用 BALANCED 的结果
+     */
     @SuppressLint("MissingPermission")
     private suspend fun sampleLocation() {
-        val cts = CancellationTokenSource()
-        val location: Location = try {
-            kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-                fused.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, cts.token)
-                    .addOnSuccessListener { loc -> if (loc != null) cont.resumeWith(Result.success(loc)) else cont.cancel() }
-                    .addOnFailureListener { e -> cont.resumeWith(Result.failure(e)) }
-                cont.invokeOnCancellation { cts.cancel() }
-            }
-        } catch (e: Exception) {
-            return
+        // 第一步：粗略
+        val coarse = fetchLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY) ?: return
+
+        // 第二步：判断要不要升级到精准
+        val previous = dao.getLatestLocationRecord()
+        val moved = previous == null ||
+            distanceMeters(previous.latitude, previous.longitude,
+                coarse.latitude, coarse.longitude) > MOVE_THRESHOLD_M
+
+        val final = if (moved) {
+            fetchLocation(Priority.PRIORITY_HIGH_ACCURACY) ?: coarse
+        } else {
+            coarse
         }
 
-        val address = reverseGeocode(location.latitude, location.longitude)
+        val address = reverseGeocode(final.latitude, final.longitude)
         dao.insertLocationRecord(
             LocationRecord(
-                latitude = location.latitude,
-                longitude = location.longitude,
+                latitude = final.latitude,
+                longitude = final.longitude,
                 address = address,
                 timestamp = System.currentTimeMillis(),
             ),
         )
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun fetchLocation(priority: Int): Location? {
+        val cts = CancellationTokenSource()
+        return try {
+            kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                fused.getCurrentLocation(priority, cts.token)
+                    .addOnSuccessListener { loc ->
+                        if (loc != null) cont.resumeWith(Result.success(loc))
+                        else cont.resumeWith(Result.success(null))
+                    }
+                    .addOnFailureListener { _ -> cont.resumeWith(Result.success(null)) }
+                cont.invokeOnCancellation { cts.cancel() }
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
+        val out = FloatArray(1)
+        Location.distanceBetween(lat1, lon1, lat2, lon2, out)
+        return out[0]
     }
 
     private fun reverseGeocode(lat: Double, lon: Double): String {
@@ -241,6 +275,9 @@ class TrackerService : Service() {
         private const val CHANNEL_ID = "tracker_fg"
         private const val NOTIF_ID = 1001
         const val PING_PORT = 8000
+
+        /** 两次采样相距超过这个距离（米）就判定用户在移动 → 升级到精准定位 */
+        private const val MOVE_THRESHOLD_M = 50f
 
         fun start(context: Context) {
             val i = Intent(context, TrackerService::class.java)

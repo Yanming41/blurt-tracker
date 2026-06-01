@@ -30,6 +30,9 @@ interface TrackerDao {
     @Insert
     suspend fun insertLocationRecord(record: LocationRecord): Long
 
+    @Query("SELECT * FROM location_records ORDER BY timestamp DESC LIMIT 1")
+    suspend fun getLatestLocationRecord(): LocationRecord?
+
     @Query("SELECT * FROM location_records WHERE timestamp >= :since ORDER BY timestamp ASC")
     fun observeLocationRecordsSince(since: Long): Flow<List<LocationRecord>>
 
