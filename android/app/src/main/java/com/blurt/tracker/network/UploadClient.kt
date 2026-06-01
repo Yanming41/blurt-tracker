@@ -1,6 +1,7 @@
 package com.blurt.tracker.network
 
 import com.blurt.tracker.data.ScreenEvent
+import com.blurt.tracker.util.AppUsageInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.OutputStreamWriter
@@ -36,6 +37,24 @@ object UploadClient {
         }
         lastOk
     }
+
+    /** 每日打包上传：今日 App 使用汇总（位置和屏幕事件按需另行扩展） */
+    suspend fun uploadDailyDigest(
+        baseUrl: String,
+        dayStart: Long,
+        appUsages: List<AppUsageInfo>,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val appsJson = appUsages.joinToString(",", "[", "]") { u ->
+            """{"package_name":"${u.packageName.escape()}","app_name":"${u.appName.escape()}",""" +
+                """"total_time_ms":${u.totalTimeMs},""" +
+                """"first_used":${u.firstUsed / 1000},"last_used":${u.lastUsed / 1000}}"""
+        }
+        val body = """{"day_start":${dayStart / 1000},"apps":$appsJson}"""
+        postJson("$baseUrl/mobile/daily-upload", body)
+    }
+
+    private fun String.escape(): String =
+        replace("\\", "\\\\").replace("\"", "\\\"")
 
     private fun postJson(url: String, body: String): Boolean {
         val u = URL(url)

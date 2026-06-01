@@ -64,4 +64,17 @@ interface TrackerDao {
 
     @Query("SELECT * FROM screen_events WHERE timestamp BETWEEN :start AND :end ORDER BY timestamp ASC")
     fun observeScreenEventsBetween(start: Long, end: Long): Flow<List<ScreenEvent>>
+
+    // ---------- Mood ----------
+    @Insert
+    suspend fun insertMoodEntry(entry: MoodEntry): Long
+
+    @Query("SELECT * FROM mood_entries WHERE timestamp BETWEEN :start AND :end ORDER BY timestamp ASC")
+    fun observeMoodEntriesBetween(start: Long, end: Long): Flow<List<MoodEntry>>
+
+    @Query("SELECT * FROM mood_entries WHERE timestamp >= :since ORDER BY timestamp DESC")
+    fun observeMoodEntriesSince(since: Long): Flow<List<MoodEntry>>
+
+    @Query("DELETE FROM mood_entries WHERE timestamp >= :since")
+    suspend fun deleteMoodEntriesSince(since: Long)
 }

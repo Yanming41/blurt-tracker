@@ -1,6 +1,6 @@
 package com.blurt.tracker.ui
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,19 +12,23 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetState
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,99 +36,110 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.times
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.blurt.tracker.data.AppRecord
 import com.blurt.tracker.data.LocationRecord
 import com.blurt.tracker.data.ScreenEvent
+import com.blurt.tracker.util.AppSegment
+import com.blurt.tracker.util.UsageStatsHelper
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
-private val BlueCard = Color(0xFFE3F2FD)
-private val GreenCard = Color(0xFFE8F5E9)
-private val GrayCard = Color(0x33888888)
-private val YellowChip = Color(0xFFFFF59D)
-private val RedCard = Color(0xFFFFCDD2) // 预留：烂摊子记录
+// ===== 颜色规则 =====
+private data class AppPalette(val fill: Color, val border: Color)
 
+private fun paletteFor(pkg: String, appName: String): AppPalette {
+    val key = "${pkg.lowercase()} ${appName.lowercase()}"
+    fun has(vararg ks: String) = ks.any { key.contains(it) }
+    return when {
+        has("wechat", "tencent.mm", "qq", "weibo", "telegram", "微信", "通讯") ->
+            AppPalette(Color(0xFFE3F2FD), Color(0xFF64B5F6))
+        has("youtube", "tiktok", "bilibili", "douyin", "netflix", "music", "spotify", "抖音", "视频", "音乐") ->
+            AppPalette(Color(0xFFFFF3E0), Color(0xFFFFB74D))
+        has("chrome", "browser", "edge", "firefox", "docs", "kindle", "notion", "obsidian", "学习", "阅读", "doc") ->
+            AppPalette(Color(0xFFE8F5E9), Color(0xFF81C784))
+        has("androidstudio", "idea", "code", "vscode", "termux", "git", "dev") ->
+            AppPalette(Color(0xFFF3E5F5), Color(0xFFBA68C8))
+        else -> AppPalette(Color(0xFFF5F5F5), Color(0xFFBDBDBD))
+    }
+}
+
+private val IdleGray = Color(0x4D9E9E9E)
+private val LocationDot = Color(0xFF4CAF50)
+private val MoodTriangle = Color(0xFFE53935)
+private val NowLine = Color(0xFFE53935)
+
+// 时间轴布局常量
+private val HOUR_HEIGHT = 64.dp
+private val SCALE_WIDTH = 48.dp
+private val LINE_X = 56.dp        // 中间竖线 x 位置
+private val EVENT_LEFT_PADDING = 8.dp
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
-    val s by vm.state.collectAsState()
-    val dateFmt = remember { SimpleDateFormat("yyyy-MM-dd EEE", Locale.getDefault()) }
+    val segments by vm.appSegments.collectAsState()
+    val locations by vm.locationRecords.collectAsState()
+    val screens by vm.screenEvents.collectAsState()
+    val summary by vm.todaySummary.collectAsState()
+
+    LaunchedEffect(Unit) { vm.refresh() }
+
+    var sheetSegment by remember { mutableStateOf<AppSegment?>(null) }
+    var sheetLocation by remember { mutableStateOf<LocationRecord?>(null) }
+    val sheetState = rememberModalBottomSheetState()
 
     Column(Modifier.fillMaxSize()) {
-        DateHeader(
-            dayStart = s.dayStart,
-            label = if (s.dayStart == startOfToday()) "今天" else dateFmt.format(Date(s.dayStart)),
-            onPrev = vm::goPrevDay,
-            onNext = vm::goNextDay,
-            onToday = vm::goToday,
-        )
-        StatsRow(s.stats)
+        StatsRow(summary)
         HorizontalDivider()
-        if (s.items.isEmpty()) {
-            EmptyHint()
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                items(s.items, key = { it.time.toString() + it::class.simpleName }) { item ->
-                    TimelineRow(item)
-                }
-            }
+        TimelineCanvas(
+            segments = segments,
+            locations = locations,
+            screens = screens,
+            onSegmentClick = { sheetSegment = it },
+            onLocationClick = { sheetLocation = it },
+        )
+    }
+
+    sheetSegment?.let { seg ->
+        ModalBottomSheet(onDismissRequest = { sheetSegment = null }, sheetState = sheetState) {
+            SegmentDetail(seg, locations)
+        }
+    }
+    sheetLocation?.let { loc ->
+        ModalBottomSheet(onDismissRequest = { sheetLocation = null }, sheetState = sheetState) {
+            LocationDetail(loc)
         }
     }
 }
 
-// ---------- Header ----------
-@Composable
-private fun DateHeader(
-    dayStart: Long,
-    label: String,
-    onPrev: () -> Unit,
-    onNext: () -> Unit,
-    onToday: () -> Unit,
-) {
-    val isToday = dayStart == startOfToday()
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onPrev) { Text("◀") }
-        Text(
-            text = label,
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier
-                .weight(1f)
-                .clickable(enabled = !isToday) { onToday() },
-        )
-        IconButton(
-            onClick = onNext,
-            enabled = !isToday,
-        ) { Text(if (isToday) "▶" else "▶", color = if (isToday) Color.Gray else Color.Unspecified) }
-    }
-}
+// =====================  Stats Row  =====================
 
-// ---------- Stats row ----------
 @Composable
-private fun StatsRow(stats: TimelineStats) {
+private fun StatsRow(s: TodaySummary) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        StatCell("亮屏次数", "${stats.screenOnCount}次", Modifier.weight(1f))
-        StatCell("屏幕时间", formatHM(stats.screenTimeMs), Modifier.weight(1f))
-        StatCell("使用App数", "${stats.appCount}个", Modifier.weight(1f))
-        StatCell("位置变化", "${stats.locationChanges}处", Modifier.weight(1f))
+        StatCell("亮屏次数", "${s.screenOnCount}次", Modifier.weight(1f))
+        StatCell("屏幕总时长", formatHM(s.totalScreenTimeMs), Modifier.weight(1f))
+        StatCell("使用App数", "${s.appCount}个", Modifier.weight(1f))
+        StatCell("位置变化", "${s.locationCount}处", Modifier.weight(1f))
     }
 }
 
@@ -132,9 +147,7 @@ private fun StatsRow(stats: TimelineStats) {
 private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
     Card(modifier = modifier, elevation = CardDefaults.cardElevation(1.dp)) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp, horizontal = 6.dp),
+            Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -144,141 +157,298 @@ private fun StatCell(label: String, value: String, modifier: Modifier = Modifier
     }
 }
 
-// ---------- Timeline row（左侧时刻 + 右侧卡片） ----------
+// =====================  Canvas Timeline  =====================
+
 @Composable
-private fun TimelineRow(item: TLItem) {
-    val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Top,
+private fun TimelineCanvas(
+    segments: List<AppSegment>,
+    locations: List<LocationRecord>,
+    screens: List<ScreenEvent>,
+    onSegmentClick: (AppSegment) -> Unit,
+    onLocationClick: (LocationRecord) -> Unit,
+) {
+    val density = LocalDensity.current
+    val scroll = rememberScrollState()
+    val totalHours = TimelineViewModel.TIMELINE_END_HOUR - TimelineViewModel.TIMELINE_START_HOUR
+    val totalHeight = HOUR_HEIGHT * totalHours
+    val dayStart = TimelineViewModel.startOfToday()
+    val zeroMs = dayStart + TimelineViewModel.TIMELINE_START_HOUR * 3600_000L
+
+    // 当前时间，每分钟刷新
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            delay(60_000)
+        }
+    }
+
+    // 自动滚到当前时间
+    LaunchedEffect(totalHeight) {
+        val nowY = msToDp(nowMs - zeroMs, density.density)
+        if (nowY > 0) scroll.scrollTo(((nowY - 200).coerceAtLeast(0f)).toInt())
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scroll),
     ) {
-        Text(
-            text = timeFmt.format(Date(item.time)),
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier
-                .width(52.dp)
-                .padding(top = 10.dp),
-            color = Color.Gray,
-        )
-        // 时间轴竖线
         Box(
-            modifier = Modifier
-                .width(2.dp)
-                .height(if (item is TLItem.Idle) idleHeightDp(item.durationMs) else 56.dp)
-                .padding(vertical = 4.dp)
-                .background(Color(0xFFBDBDBD)),
-        )
-        Spacer(Modifier.width(8.dp))
-        when (item) {
-            is TLItem.App -> AppCard(item.record)
-            is TLItem.Loc -> LocCard(item.record)
-            is TLItem.Screen -> ScreenChip(item.event)
-            is TLItem.Idle -> IdleBlock(item)
+            Modifier
+                .fillMaxWidth()
+                .height(totalHeight),
+        ) {
+            TimeScaleCanvas(totalHours)
+
+            // 息屏灰块
+            screenIdlesFromEvents(screens, zeroMs).forEach { (s, e) ->
+                IdleBlock(startMs = s, endMs = e, zeroMs = zeroMs)
+            }
+
+            // App 段卡片
+            segments.forEach { seg ->
+                AppSegmentCard(seg, zeroMs) { onSegmentClick(seg) }
+            }
+
+            // 位置点（绿圆）
+            locations.forEach { loc ->
+                LocationDotMark(loc, zeroMs) { onLocationClick(loc) }
+            }
+
+            // 当前时间红线
+            NowLine(nowMs = nowMs, zeroMs = zeroMs)
         }
     }
 }
 
-// ---------- 卡片 ----------
 @Composable
-private fun AppCard(r: AppRecord) {
-    var expanded by remember { mutableStateOf(false) }
-    val durMin = ((r.endTime - r.startTime) / 60_000L).coerceAtLeast(1)
-    ColoredCard(BlueCard, onClick = { expanded = !expanded }) {
-        Text("📱 ${r.appName}", fontWeight = FontWeight.SemiBold)
-        Text(formatMinutes(durMin), style = MaterialTheme.typography.bodySmall)
-        AnimatedVisibility(expanded) {
-            Column(Modifier.padding(top = 6.dp)) {
-                Text("包名：${r.packageName}", style = MaterialTheme.typography.labelSmall)
-                val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
-                Text(
-                    "${timeFmt.format(Date(r.startTime))} → ${timeFmt.format(Date(r.endTime))}",
-                    style = MaterialTheme.typography.labelSmall,
-                )
+private fun TimeScaleCanvas(totalHours: Int) {
+    val labelColor = Color.Gray
+    val lineColor = Color(0xFFE0E0E0)
+
+    Canvas(
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        val hourPx = HOUR_HEIGHT.toPx()
+        val linePx = LINE_X.toPx()
+
+        // 中间竖线
+        drawLine(
+            color = lineColor,
+            start = Offset(linePx, 0f),
+            end = Offset(linePx, size.height),
+            strokeWidth = 1.dp.toPx(),
+        )
+
+        // 每小时刻度横线
+        val tickW = 8.dp.toPx()
+        for (h in 0..totalHours) {
+            val y = h * hourPx
+            drawLine(
+                color = lineColor,
+                start = Offset(linePx - tickW / 2f, y),
+                end = Offset(linePx + tickW / 2f, y),
+                strokeWidth = 1.dp.toPx(),
+            )
+        }
+
+        // 小时文字标签：用原生 Canvas 写文字
+        drawIntoCanvas { canvas ->
+            val paint = android.graphics.Paint().apply {
+                color = labelColor.toArgb()
+                textSize = 10.sp.toPx()
+                typeface = android.graphics.Typeface.MONOSPACE
+                isAntiAlias = true
+            }
+            for (h in 0..totalHours) {
+                val hourLabel = "%02d:00".format(TimelineViewModel.TIMELINE_START_HOUR + h)
+                val y = h * hourPx + paint.textSize / 2f
+                canvas.nativeCanvas.drawText(hourLabel, 4f, y, paint)
             }
         }
     }
 }
 
 @Composable
-private fun LocCard(r: LocationRecord) {
-    var expanded by remember { mutableStateOf(false) }
-    ColoredCard(GreenCard, onClick = { expanded = !expanded }) {
-        Text("📍 到达 ${r.address}", fontWeight = FontWeight.SemiBold)
-        AnimatedVisibility(expanded) {
+private fun AppSegmentCard(
+    seg: AppSegment,
+    zeroMs: Long,
+    onClick: () -> Unit,
+) {
+    val density = LocalDensity.current
+    val yDp = msToDp(seg.startTime - zeroMs, density.density).dp
+    val heightDp = msToDp(seg.durationMs, density.density).dp.coerceAtLeast(24.dp)
+    val palette = paletteFor(seg.packageName, seg.appName)
+
+    Box(
+        modifier = Modifier
+            .offset(x = LINE_X + EVENT_LEFT_PADDING, y = yDp)
+            .padding(end = 8.dp)
+            .fillMaxWidth(0.78f)
+            .height(heightDp)
+            .background(palette.fill, RoundedCornerShape(8.dp))
+            .drawBehind {
+                // 边框
+                drawRoundRect(
+                    color = palette.border,
+                    style = Stroke(width = 1.dp.toPx()),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx()),
+                )
+            }
+            .clickable { onClick() }
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Column {
             Text(
-                "${"%.5f".format(r.latitude)}, ${"%.5f".format(r.longitude)}",
+                "📱 ${seg.appName}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+            Text(
+                formatDur(seg.durationMs),
                 style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(top = 4.dp),
+                color = Color.DarkGray,
             )
         }
     }
 }
 
 @Composable
-private fun ScreenChip(e: ScreenEvent) {
-    Surface(
-        color = YellowChip,
-        shape = RoundedCornerShape(50),
-        modifier = Modifier.padding(vertical = 6.dp),
-    ) {
-        Text(
-            text = "🔓 ${e.eventType}手机",
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-        )
-    }
-}
-
-@Composable
-private fun IdleBlock(item: TLItem.Idle) {
-    val deep = item.durationMs >= TimelineViewModel.IDLE_DEEP_MS
+private fun IdleBlock(startMs: Long, endMs: Long, zeroMs: Long) {
+    val density = LocalDensity.current
+    val yDp = msToDp(startMs - zeroMs, density.density).dp.coerceAtLeast(0.dp)
+    val heightDp = msToDp(endMs - startMs, density.density).dp
     Box(
         modifier = Modifier
-            .fillMaxWidth()
-            .height(idleHeightDp(item.durationMs))
-            .background(GrayCard, RoundedCornerShape(8.dp))
-            .padding(12.dp),
+            .offset(x = LINE_X + EVENT_LEFT_PADDING, y = yDp)
+            .fillMaxWidth(0.78f)
+            .height(heightDp)
+            .background(IdleGray, RoundedCornerShape(6.dp)),
         contentAlignment = Alignment.Center,
     ) {
+        if (endMs - startMs >= 30 * 60_000L) {
+            Text("💤 ${formatDur(endMs - startMs)}",
+                style = MaterialTheme.typography.labelMedium, color = Color.DarkGray)
+        }
+    }
+}
+
+@Composable
+private fun LocationDotMark(loc: LocationRecord, zeroMs: Long, onClick: () -> Unit) {
+    val density = LocalDensity.current
+    val yDp = msToDp(loc.timestamp - zeroMs, density.density).dp - 4.dp
+    Box(
+        modifier = Modifier
+            .offset(x = LINE_X - 4.dp, y = yDp)
+            .width(8.dp).height(8.dp)
+            .background(LocationDot, RoundedCornerShape(50))
+            .clickable { onClick() },
+    )
+}
+
+@Composable
+private fun NowLine(nowMs: Long, zeroMs: Long) {
+    val density = LocalDensity.current
+    val yDp = msToDp(nowMs - zeroMs, density.density).dp
+    if (yDp < 0.dp) return
+    val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    Box(
+        modifier = Modifier
+            .offset(y = yDp)
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(NowLine),
+    )
+    Box(
+        modifier = Modifier
+            .offset(x = 2.dp, y = yDp - 8.dp)
+            .background(NowLine, RoundedCornerShape(4.dp))
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+    ) {
+        Text(timeFmt.format(Date(nowMs)), color = Color.White,
+            style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+// =====================  Bottom sheet details  =====================
+
+@Composable
+private fun SegmentDetail(seg: AppSegment, locations: List<LocationRecord>) {
+    val ctx = LocalContext.current
+    val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    // 找在该时段内的位置点
+    val matching = locations.firstOrNull { it.timestamp in seg.startTime..seg.endTime }
+        ?: locations.minByOrNull { kotlin.math.abs(it.timestamp - seg.startTime) }
+
+    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+        Text("📱 ${seg.appName}", style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text(seg.packageName, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        Spacer(Modifier.height(12.dp))
+        Text("使用时长：${formatDur(seg.durationMs)}", style = MaterialTheme.typography.bodyLarge)
         Text(
-            text = if (deep) "💤 休息中 · ${formatHM(item.durationMs)}"
-            else "休息中 · ${formatHM(item.durationMs)}",
-            color = Color(0xFF555555),
+            "${timeFmt.format(Date(seg.startTime))} → ${timeFmt.format(Date(seg.endTime))}",
             style = MaterialTheme.typography.bodyMedium,
         )
+        if (matching != null) {
+            Spacer(Modifier.height(8.dp))
+            Text("在这段时间你在：${matching.address}",
+                style = MaterialTheme.typography.bodyMedium)
+        }
+        Spacer(Modifier.height(20.dp))
     }
 }
 
 @Composable
-private fun ColoredCard(
-    bg: Color,
-    onClick: () -> Unit,
-    content: @Composable () -> Unit,
-) {
-    Surface(
-        color = bg,
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() },
-    ) {
-        Column(Modifier.padding(12.dp)) { content() }
+private fun LocationDetail(loc: LocationRecord) {
+    val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+        Text("📍 ${loc.address}", style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text(timeFmt.format(Date(loc.timestamp)), style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(4.dp))
+        Text("${"%.5f".format(loc.latitude)}, ${"%.5f".format(loc.longitude)}",
+            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        Spacer(Modifier.height(20.dp))
     }
 }
 
-@Composable
-private fun EmptyHint() {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("今天没有数据", color = Color.Gray)
-    }
+// =====================  helpers  =====================
+
+private fun msToDp(ms: Long, density: Float): Float {
+    val hourPx = HOUR_HEIGHT.value * density
+    val hours = ms / 3600_000f
+    return hours * HOUR_HEIGHT.value
 }
 
-// ---------- 工具 ----------
-private fun idleHeightDp(durMs: Long) = when {
-    durMs < 30 * 60_000L -> 48.dp
-    durMs < 2 * 3600_000L -> 80.dp
-    durMs < 4 * 3600_000L -> 120.dp
-    else -> 160.dp
+private fun screenIdlesFromEvents(
+    events: List<ScreenEvent>,
+    zeroMs: Long,
+): List<Pair<Long, Long>> {
+    val out = mutableListOf<Pair<Long, Long>>()
+    var lastOff: Long? = null
+    val sorted = events.sortedBy { it.timestamp }
+    for (e in sorted) {
+        when (e.eventType) {
+            "息屏" -> lastOff = e.timestamp
+            "亮屏", "解锁" -> {
+                lastOff?.let { off ->
+                    if (e.timestamp - off >= 5 * 60_000L) out += off to e.timestamp
+                }
+                lastOff = null
+            }
+        }
+    }
+    lastOff?.let { off ->
+        val now = System.currentTimeMillis()
+        if (now - off >= 5 * 60_000L) out += off to now
+    }
+    return out
 }
 
 private fun formatHM(ms: Long): String {
@@ -286,22 +456,10 @@ private fun formatHM(ms: Long): String {
     val h = totalMin / 60
     val m = totalMin % 60
     return when {
-        h == 0L -> "${m}分"
-        m == 0L -> "${h}小时"
-        else -> "${h}小时${m}分"
+        h == 0L -> "${m}m"
+        m == 0L -> "${h}h"
+        else -> "${h}h ${m}m"
     }
 }
 
-private fun formatMinutes(min: Long): String {
-    val h = min / 60
-    val m = min % 60
-    return if (h > 0) "${h}小时${m}分" else "${min}分钟"
-}
-
-private fun startOfToday(): Long {
-    val c = Calendar.getInstance().apply {
-        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
-        set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
-    }
-    return c.timeInMillis
-}
+private fun formatDur(ms: Long): String = formatHM(ms)

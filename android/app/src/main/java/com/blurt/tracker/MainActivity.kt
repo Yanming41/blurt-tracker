@@ -31,14 +31,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.blurt.tracker.service.TrackerService
-import com.blurt.tracker.service.WatchdogWorker
 import com.blurt.tracker.ui.MainScreen
 import com.blurt.tracker.util.Config
-import com.blurt.tracker.util.Heartbeat
 import com.blurt.tracker.util.PermissionHelper
 import com.blurt.tracker.util.PingClient
 import com.blurt.tracker.util.PingResult
+import com.blurt.tracker.worker.LocationWorker
+import com.blurt.tracker.worker.UploadWorker
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -82,9 +81,8 @@ private fun AppRoot() {
 
     LaunchedEffect(allGranted) {
         if (allGranted) {
-            Heartbeat.setExpected(ctx, true)
-            TrackerService.start(ctx)
-            WatchdogWorker.schedule(ctx)
+            LocationWorker.schedule(ctx)
+            UploadWorker.schedule(ctx)
         }
     }
 

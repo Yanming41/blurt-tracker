@@ -4,16 +4,23 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import com.blurt.tracker.data.ScreenEvent
+import com.blurt.tracker.data.TrackerDatabase
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
- * 监听屏幕亮/灭/解锁事件。
+ * 监听屏幕亮/灭/解锁并写入 Room。
  *
- * 注意：SCREEN_ON / SCREEN_OFF 必须**动态注册**，不能写在 Manifest 里（系统限制）。
- * USER_PRESENT 也一起放在动态注册里保持一致。
+ * 注意：必须**动态注册**（SCREEN_ON/OFF 无法在 Manifest 中接收）。
+ * 由 BlurtApp.onCreate() 注册，App 进程活着时一直有效；
+ * 进程被系统回收后失效，下次进程被任何原因（Worker、用户打开 App）拉起时再注册。
  */
-class ScreenReceiver(
-    private val onEvent: (type: String, timestamp: Long) -> Unit,
-) : BroadcastReceiver() {
+class ScreenReceiver : BroadcastReceiver() {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onReceive(context: Context, intent: Intent) {
         val type = when (intent.action) {
@@ -22,7 +29,14 @@ class ScreenReceiver(
             Intent.ACTION_USER_PRESENT -> "解锁"
             else -> return
         }
-        onEvent(type, System.currentTimeMillis())
+        val ts = System.currentTimeMillis()
+        val appCtx = context.applicationContext
+        scope.launch {
+            runCatching {
+                TrackerDatabase.get(appCtx).trackerDao()
+                    .insertScreenEvent(ScreenEvent(eventType = type, timestamp = ts))
+            }
+        }
     }
 
     companion object {
