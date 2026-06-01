@@ -33,7 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.blurt.tracker.service.TrackerService
 import com.blurt.tracker.service.WatchdogWorker
-import com.blurt.tracker.ui.DashboardScreen
+import com.blurt.tracker.ui.MainScreen
 import com.blurt.tracker.util.Config
 import com.blurt.tracker.util.Heartbeat
 import com.blurt.tracker.util.PermissionHelper
@@ -115,7 +115,7 @@ private fun AppRoot() {
                 hasDesktop = true
             },
         )
-        else -> DashboardScreen()
+        else -> MainScreen()
     }
 }
 

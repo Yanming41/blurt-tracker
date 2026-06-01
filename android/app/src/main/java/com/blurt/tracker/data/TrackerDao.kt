@@ -38,4 +38,30 @@ interface TrackerDao {
 
     @Query("DELETE FROM location_records WHERE timestamp >= :since")
     suspend fun deleteLocationRecordsSince(since: Long)
+
+    // ---------- Screen events ----------
+    @Insert
+    suspend fun insertScreenEvent(event: ScreenEvent): Long
+
+    @Query("SELECT * FROM screen_events WHERE timestamp >= :since ORDER BY timestamp ASC")
+    fun observeScreenEventsSince(since: Long): Flow<List<ScreenEvent>>
+
+    @Query("SELECT * FROM screen_events WHERE timestamp BETWEEN :start AND :end ORDER BY timestamp ASC")
+    suspend fun getScreenEventsBetween(start: Long, end: Long): List<ScreenEvent>
+
+    @Query("SELECT * FROM screen_events WHERE timestamp > :sinceTs ORDER BY timestamp ASC")
+    suspend fun getScreenEventsAfter(sinceTs: Long): List<ScreenEvent>
+
+    @Query("DELETE FROM screen_events WHERE timestamp >= :since")
+    suspend fun deleteScreenEventsSince(since: Long)
+
+    // ---------- Cross-cut queries for Timeline ----------
+    @Query("SELECT * FROM app_records WHERE startTime BETWEEN :start AND :end ORDER BY startTime ASC")
+    fun observeAppRecordsBetween(start: Long, end: Long): Flow<List<AppRecord>>
+
+    @Query("SELECT * FROM location_records WHERE timestamp BETWEEN :start AND :end ORDER BY timestamp ASC")
+    fun observeLocationRecordsBetween(start: Long, end: Long): Flow<List<LocationRecord>>
+
+    @Query("SELECT * FROM screen_events WHERE timestamp BETWEEN :start AND :end ORDER BY timestamp ASC")
+    fun observeScreenEventsBetween(start: Long, end: Long): Flow<List<ScreenEvent>>
 }

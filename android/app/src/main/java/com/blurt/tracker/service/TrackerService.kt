@@ -21,7 +21,10 @@ import androidx.core.content.ContextCompat
 import com.blurt.tracker.MainActivity
 import com.blurt.tracker.data.AppRecord
 import com.blurt.tracker.data.LocationRecord
+import com.blurt.tracker.data.ScreenEvent
 import com.blurt.tracker.data.TrackerDatabase
+import com.blurt.tracker.network.UploadClient
+import com.blurt.tracker.util.Config
 import com.blurt.tracker.util.Heartbeat
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
@@ -41,6 +44,8 @@ class TrackerService : Service() {
     private var appJob: Job? = null
     private var locJob: Job? = null
     private val pingServer = PingServer(PING_PORT)
+    private var screenReceiver: ScreenReceiver? = null
+    @Volatile private var screenOn: Boolean = true
 
     private val db by lazy { TrackerDatabase.get(this) }
     private val dao by lazy { db.trackerDao() }
@@ -55,6 +60,7 @@ class TrackerService : Service() {
         super.onCreate()
         startInForeground()
         Heartbeat.beat(this) // 启动即心跳
+        registerScreenReceiver()
         startAppLoop()
         startLocationLoop()
         pingServer.safeStart()
@@ -73,12 +79,63 @@ class TrackerService : Service() {
 
     override fun onDestroy() {
         pingServer.safeStop()
+        unregisterScreenReceiver()
         // 如果用户期望服务在跑，但服务被销毁了 -> 发通知
         if (Heartbeat.isExpected(this)) {
             ServiceAliveNotifier.notifyKilled(this, reason = "系统回收了后台服务")
         }
         scope.cancel()
         super.onDestroy()
+    }
+
+    // ---------- Screen receiver ----------
+    private fun registerScreenReceiver() {
+        if (screenReceiver != null) return
+        val r = ScreenReceiver { type, ts -> handleScreenEvent(type, ts) }
+        screenReceiver = r
+        registerReceiver(r, ScreenReceiver.newFilter())
+    }
+
+    private fun unregisterScreenReceiver() {
+        screenReceiver?.let { runCatching { unregisterReceiver(it) } }
+        screenReceiver = null
+    }
+
+    private fun handleScreenEvent(type: String, ts: Long) {
+        scope.launch {
+            // 1. 写库
+            dao.insertScreenEvent(ScreenEvent(eventType = type, timestamp = ts))
+
+            // 2. 维护 screenOn 状态 + 息屏时封档当前 App 段
+            when (type) {
+                "息屏" -> {
+                    screenOn = false
+                    sealLatestAppRecord(ts)
+                    // 3. 息屏时批量上传当天屏幕事件（省电：积攒后再传）
+                    uploadPendingScreenEvents()
+                }
+                "亮屏", "解锁" -> {
+                    screenOn = true
+                }
+            }
+        }
+    }
+
+    /** 息屏时把当前 App 段的 endTime 截断到息屏时刻，停止延长。 */
+    private suspend fun sealLatestAppRecord(sealAt: Long) {
+        val latest = dao.getLatestAppRecord() ?: return
+        if (latest.endTime < sealAt) {
+            dao.updateAppRecord(latest.copy(endTime = sealAt))
+        }
+    }
+
+    private suspend fun uploadPendingScreenEvents() {
+        val baseUrl = Config.baseUrl(this@TrackerService) ?: return
+        val lastUploaded = Config.getLastUploadedScreenTs(this@TrackerService)
+        val pending = dao.getScreenEventsAfter(lastUploaded)
+        if (pending.isEmpty()) return
+        val newWatermark = UploadClient.uploadScreenEvents(baseUrl, pending) ?: return
+        Config.setLastUploadedScreenTs(this@TrackerService, newWatermark)
     }
 
     // ---------- Foreground ----------
@@ -125,7 +182,10 @@ class TrackerService : Service() {
         appJob = scope.launch {
             while (true) {
                 Heartbeat.beat(this@TrackerService) // 每次循环都心跳
-                runCatching { sampleForegroundApp() }
+                // 息屏期间不采样，避免把睡眠时间算成"在用某 App"
+                if (screenOn) {
+                    runCatching { sampleForegroundApp() }
+                }
                 delay(60_000)
             }
         }

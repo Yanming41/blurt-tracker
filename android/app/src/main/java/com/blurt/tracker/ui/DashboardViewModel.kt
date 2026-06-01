@@ -87,6 +87,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             val since = startOfToday()
             dao.deleteAppRecordsSince(since)
             dao.deleteLocationRecordsSince(since)
+            dao.deleteScreenEventsSince(since)
         }
     }
 
