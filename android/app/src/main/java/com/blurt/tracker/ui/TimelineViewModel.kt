@@ -145,9 +145,9 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         const val DAY_MS = 24 * 3600_000L
-        /** 时间轴可视范围（小时） */
-        const val TIMELINE_START_HOUR = 6
-        const val TIMELINE_END_HOUR = 23
+        /** 时间轴可视范围（小时）—— 整天 */
+        const val TIMELINE_START_HOUR = 0
+        const val TIMELINE_END_HOUR = 24
 
         fun startOfToday(): Long {
             val c = Calendar.getInstance().apply {

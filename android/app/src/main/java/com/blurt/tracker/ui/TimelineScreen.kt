@@ -3,10 +3,12 @@ package com.blurt.tracker.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,9 +22,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -30,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -51,13 +54,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.blurt.tracker.data.LocationRecord
 import com.blurt.tracker.data.ScreenEvent
 import com.blurt.tracker.util.AppSegment
-import com.blurt.tracker.util.UsageStatsHelper
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import kotlin.math.roundToInt
 
 // ===== 颜色规则 =====
 private data class AppPalette(val fill: Color, val border: Color)
@@ -80,14 +80,50 @@ private fun paletteFor(pkg: String, appName: String): AppPalette {
 
 private val IdleGray = Color(0x4D9E9E9E)
 private val LocationDot = Color(0xFF4CAF50)
-private val MoodTriangle = Color(0xFFE53935)
-private val NowLine = Color(0xFFE53935)
+private val NowLineColor = Color(0xFFE53935)
 
 // 时间轴布局常量
-private val HOUR_HEIGHT = 64.dp
 private val SCALE_WIDTH = 48.dp
-private val LINE_X = 56.dp        // 中间竖线 x 位置
+private val LINE_X = 56.dp
 private val EVENT_LEFT_PADDING = 8.dp
+private val RIGHT_PADDING = 12.dp
+private const val MIN_HOUR_HEIGHT = 32f
+private const val MAX_HOUR_HEIGHT = 240f
+private const val DEFAULT_HOUR_HEIGHT = 64f
+
+// 用于泳道布局
+private data class PositionedSegment(
+    val seg: AppSegment,
+    val lane: Int,
+    val totalLanes: Int,
+)
+
+/**
+ * 给 segments 分配「泳道」(lane)：同一泳道内的段在时间上不重叠。
+ * 贪心算法：按 startTime 排序，每个段放进第一个空闲泳道；都不空则新开。
+ */
+private fun assignLanes(segments: List<AppSegment>): List<PositionedSegment> {
+    val laneEnds = mutableListOf<Long>()
+    val sorted = segments.sortedBy { it.startTime }
+    val firstPass = mutableListOf<Pair<AppSegment, Int>>()
+    for (seg in sorted) {
+        var assigned = -1
+        for (i in laneEnds.indices) {
+            if (laneEnds[i] <= seg.startTime) {
+                laneEnds[i] = seg.endTime
+                assigned = i
+                break
+            }
+        }
+        if (assigned == -1) {
+            laneEnds.add(seg.endTime)
+            assigned = laneEnds.size - 1
+        }
+        firstPass.add(seg to assigned)
+    }
+    val total = laneEnds.size.coerceAtLeast(1)
+    return firstPass.map { (s, l) -> PositionedSegment(s, l, total) }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -166,12 +202,18 @@ private fun TimelineCanvas(
     onSegmentClick: (AppSegment) -> Unit,
     onLocationClick: (LocationRecord) -> Unit,
 ) {
-    val density = LocalDensity.current
     val scroll = rememberScrollState()
     val totalHours = TimelineViewModel.TIMELINE_END_HOUR - TimelineViewModel.TIMELINE_START_HOUR
-    val totalHeight = HOUR_HEIGHT * totalHours
     val dayStart = TimelineViewModel.startOfToday()
     val zeroMs = dayStart + TimelineViewModel.TIMELINE_START_HOUR * 3600_000L
+
+    // 双指缩放：调整每小时高度
+    var hourHeightDp by remember { mutableFloatStateOf(DEFAULT_HOUR_HEIGHT) }
+    val transformState = rememberTransformableState { zoomChange, _, _ ->
+        hourHeightDp = (hourHeightDp * zoomChange).coerceIn(MIN_HOUR_HEIGHT, MAX_HOUR_HEIGHT)
+    }
+
+    val totalHeight = (hourHeightDp * totalHours).dp
 
     // 当前时间，每分钟刷新
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -182,54 +224,72 @@ private fun TimelineCanvas(
         }
     }
 
-    // 自动滚到当前时间
-    LaunchedEffect(totalHeight) {
-        val nowY = msToDp(nowMs - zeroMs, density.density)
-        if (nowY > 0) scroll.scrollTo(((nowY - 200).coerceAtLeast(0f)).toInt())
+    // 启动滚到当前时间附近
+    LaunchedEffect(hourHeightDp) {
+        val nowY = msToDpValue(nowMs - zeroMs, hourHeightDp)
+        val target = (nowY - 200f).coerceAtLeast(0f).toInt()
+        scroll.scrollTo(target)
     }
 
-    Box(
-        Modifier
+    // 泳道分配
+    val positioned = remember(segments) { assignLanes(segments) }
+    val maxLanes = positioned.maxOfOrNull { it.totalLanes } ?: 1
+
+    BoxWithConstraints(
+        modifier = Modifier
             .fillMaxSize()
+            .transformable(state = transformState)
             .verticalScroll(scroll),
     ) {
+        val plotWidth = maxWidth - LINE_X - EVENT_LEFT_PADDING - RIGHT_PADDING
+        val laneGap = 4.dp
+        val laneWidth = (plotWidth - laneGap * (maxLanes - 1)) / maxLanes
+
         Box(
-            Modifier
-                .fillMaxWidth()
-                .height(totalHeight),
+            Modifier.fillMaxWidth().height(totalHeight),
         ) {
-            TimeScaleCanvas(totalHours)
+            TimeScaleCanvas(totalHours, hourHeightDp)
 
-            // 息屏灰块
+            // 息屏灰块（占满整个泳道区域宽度）
             screenIdlesFromEvents(screens, zeroMs).forEach { (s, e) ->
-                IdleBlock(startMs = s, endMs = e, zeroMs = zeroMs)
+                IdleBlock(
+                    startMs = s, endMs = e, zeroMs = zeroMs,
+                    hourHeightDp = hourHeightDp,
+                    width = plotWidth,
+                )
             }
 
-            // App 段卡片
-            segments.forEach { seg ->
-                AppSegmentCard(seg, zeroMs) { onSegmentClick(seg) }
+            // App 段卡片（按泳道）
+            positioned.forEach { ps ->
+                val xOff = LINE_X + EVENT_LEFT_PADDING +
+                    (laneWidth + laneGap) * ps.lane
+                AppSegmentCard(
+                    ps = ps,
+                    zeroMs = zeroMs,
+                    hourHeightDp = hourHeightDp,
+                    xOffset = xOff,
+                    width = laneWidth,
+                ) { onSegmentClick(ps.seg) }
             }
 
-            // 位置点（绿圆）
+            // 位置点
             locations.forEach { loc ->
-                LocationDotMark(loc, zeroMs) { onLocationClick(loc) }
+                LocationDotMark(loc, zeroMs, hourHeightDp) { onLocationClick(loc) }
             }
 
             // 当前时间红线
-            NowLine(nowMs = nowMs, zeroMs = zeroMs)
+            NowLine(nowMs = nowMs, zeroMs = zeroMs, hourHeightDp = hourHeightDp)
         }
     }
 }
 
 @Composable
-private fun TimeScaleCanvas(totalHours: Int) {
+private fun TimeScaleCanvas(totalHours: Int, hourHeightDp: Float) {
     val labelColor = Color.Gray
     val lineColor = Color(0xFFE0E0E0)
 
-    Canvas(
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        val hourPx = HOUR_HEIGHT.toPx()
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val hourPx = hourHeightDp.dp.toPx()
         val linePx = LINE_X.toPx()
 
         // 中间竖线
@@ -252,7 +312,7 @@ private fun TimeScaleCanvas(totalHours: Int) {
             )
         }
 
-        // 小时文字标签：用原生 Canvas 写文字
+        // 小时文字标签
         drawIntoCanvas { canvas ->
             val paint = android.graphics.Paint().apply {
                 color = labelColor.toArgb()
@@ -271,24 +331,25 @@ private fun TimeScaleCanvas(totalHours: Int) {
 
 @Composable
 private fun AppSegmentCard(
-    seg: AppSegment,
+    ps: PositionedSegment,
     zeroMs: Long,
+    hourHeightDp: Float,
+    xOffset: androidx.compose.ui.unit.Dp,
+    width: androidx.compose.ui.unit.Dp,
     onClick: () -> Unit,
 ) {
-    val density = LocalDensity.current
-    val yDp = msToDp(seg.startTime - zeroMs, density.density).dp
-    val heightDp = msToDp(seg.durationMs, density.density).dp.coerceAtLeast(24.dp)
+    val seg = ps.seg
+    val yDp = msToDpValue(seg.startTime - zeroMs, hourHeightDp).dp
+    val heightDp = msToDpValue(seg.durationMs, hourHeightDp).dp.coerceAtLeast(24.dp)
     val palette = paletteFor(seg.packageName, seg.appName)
 
     Box(
         modifier = Modifier
-            .offset(x = LINE_X + EVENT_LEFT_PADDING, y = yDp)
-            .padding(end = 8.dp)
-            .fillMaxWidth(0.78f)
+            .offset(x = xOffset, y = yDp)
+            .width(width)
             .height(heightDp)
             .background(palette.fill, RoundedCornerShape(8.dp))
             .drawBehind {
-                // 边框
                 drawRoundRect(
                     color = palette.border,
                     style = Stroke(width = 1.dp.toPx()),
@@ -296,8 +357,8 @@ private fun AppSegmentCard(
                 )
             }
             .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        contentAlignment = Alignment.CenterStart,
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        contentAlignment = Alignment.TopStart,
     ) {
         Column {
             Text(
@@ -306,39 +367,50 @@ private fun AppSegmentCard(
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
             )
-            Text(
-                formatDur(seg.durationMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.DarkGray,
-            )
+            if (heightDp >= 36.dp) {
+                Text(
+                    formatHM(seg.durationMs),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.DarkGray,
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun IdleBlock(startMs: Long, endMs: Long, zeroMs: Long) {
-    val density = LocalDensity.current
-    val yDp = msToDp(startMs - zeroMs, density.density).dp.coerceAtLeast(0.dp)
-    val heightDp = msToDp(endMs - startMs, density.density).dp
+private fun IdleBlock(
+    startMs: Long,
+    endMs: Long,
+    zeroMs: Long,
+    hourHeightDp: Float,
+    width: androidx.compose.ui.unit.Dp,
+) {
+    val yDp = msToDpValue(startMs - zeroMs, hourHeightDp).dp.coerceAtLeast(0.dp)
+    val heightDp = msToDpValue(endMs - startMs, hourHeightDp).dp
     Box(
         modifier = Modifier
             .offset(x = LINE_X + EVENT_LEFT_PADDING, y = yDp)
-            .fillMaxWidth(0.78f)
+            .width(width)
             .height(heightDp)
             .background(IdleGray, RoundedCornerShape(6.dp)),
         contentAlignment = Alignment.Center,
     ) {
         if (endMs - startMs >= 30 * 60_000L) {
-            Text("💤 ${formatDur(endMs - startMs)}",
+            Text("💤 ${formatHM(endMs - startMs)}",
                 style = MaterialTheme.typography.labelMedium, color = Color.DarkGray)
         }
     }
 }
 
 @Composable
-private fun LocationDotMark(loc: LocationRecord, zeroMs: Long, onClick: () -> Unit) {
-    val density = LocalDensity.current
-    val yDp = msToDp(loc.timestamp - zeroMs, density.density).dp - 4.dp
+private fun LocationDotMark(
+    loc: LocationRecord,
+    zeroMs: Long,
+    hourHeightDp: Float,
+    onClick: () -> Unit,
+) {
+    val yDp = msToDpValue(loc.timestamp - zeroMs, hourHeightDp).dp - 4.dp
     Box(
         modifier = Modifier
             .offset(x = LINE_X - 4.dp, y = yDp)
@@ -349,9 +421,8 @@ private fun LocationDotMark(loc: LocationRecord, zeroMs: Long, onClick: () -> Un
 }
 
 @Composable
-private fun NowLine(nowMs: Long, zeroMs: Long) {
-    val density = LocalDensity.current
-    val yDp = msToDp(nowMs - zeroMs, density.density).dp
+private fun NowLine(nowMs: Long, zeroMs: Long, hourHeightDp: Float) {
+    val yDp = msToDpValue(nowMs - zeroMs, hourHeightDp).dp
     if (yDp < 0.dp) return
     val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     Box(
@@ -359,12 +430,12 @@ private fun NowLine(nowMs: Long, zeroMs: Long) {
             .offset(y = yDp)
             .fillMaxWidth()
             .height(1.dp)
-            .background(NowLine),
+            .background(NowLineColor),
     )
     Box(
         modifier = Modifier
             .offset(x = 2.dp, y = yDp - 8.dp)
-            .background(NowLine, RoundedCornerShape(4.dp))
+            .background(NowLineColor, RoundedCornerShape(4.dp))
             .padding(horizontal = 4.dp, vertical = 1.dp),
     ) {
         Text(timeFmt.format(Date(nowMs)), color = Color.White,
@@ -376,9 +447,7 @@ private fun NowLine(nowMs: Long, zeroMs: Long) {
 
 @Composable
 private fun SegmentDetail(seg: AppSegment, locations: List<LocationRecord>) {
-    val ctx = LocalContext.current
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
-    // 找在该时段内的位置点
     val matching = locations.firstOrNull { it.timestamp in seg.startTime..seg.endTime }
         ?: locations.minByOrNull { kotlin.math.abs(it.timestamp - seg.startTime) }
 
@@ -388,7 +457,7 @@ private fun SegmentDetail(seg: AppSegment, locations: List<LocationRecord>) {
         Spacer(Modifier.height(4.dp))
         Text(seg.packageName, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         Spacer(Modifier.height(12.dp))
-        Text("使用时长：${formatDur(seg.durationMs)}", style = MaterialTheme.typography.bodyLarge)
+        Text("使用时长：${formatHM(seg.durationMs)}", style = MaterialTheme.typography.bodyLarge)
         Text(
             "${timeFmt.format(Date(seg.startTime))} → ${timeFmt.format(Date(seg.endTime))}",
             style = MaterialTheme.typography.bodyMedium,
@@ -427,10 +496,9 @@ private fun LocationDetail(loc: LocationRecord) {
 
 // =====================  helpers  =====================
 
-private fun msToDp(ms: Long, density: Float): Float {
-    val hourPx = HOUR_HEIGHT.value * density
-    val hours = ms / 3600_000f
-    return hours * HOUR_HEIGHT.value
+/** ms 转 DP 值（不带 .dp 单位），用于 offset/height 计算 */
+private fun msToDpValue(ms: Long, hourHeightDp: Float): Float {
+    return (ms / 3600_000f) * hourHeightDp
 }
 
 private fun screenIdlesFromEvents(
@@ -468,5 +536,3 @@ private fun formatHM(ms: Long): String {
         else -> "${h}h ${m}m"
     }
 }
-
-private fun formatDur(ms: Long): String = formatHM(ms)
