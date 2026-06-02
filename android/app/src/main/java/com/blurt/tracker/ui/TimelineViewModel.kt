@@ -8,7 +8,9 @@ import com.blurt.tracker.data.MoodEntry
 import com.blurt.tracker.data.ScreenEvent
 import com.blurt.tracker.data.TrackerDatabase
 import com.blurt.tracker.util.AppSegment
+import com.blurt.tracker.util.GeocoderHelper
 import com.blurt.tracker.util.UsageStatsHelper
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -50,6 +52,15 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
     private val _summary = MutableStateFlow(TodaySummary())
     val todaySummary: StateFlow<TodaySummary> = _summary.asStateFlow()
 
+    // ----- 地址回填进度 -----
+    sealed interface BackfillState {
+        data object Idle : BackfillState
+        data class Running(val done: Int, val total: Int) : BackfillState
+        data class Finished(val updated: Int, val total: Int) : BackfillState
+    }
+    private val _backfill = MutableStateFlow<BackfillState>(BackfillState.Idle)
+    val backfill: StateFlow<BackfillState> = _backfill.asStateFlow()
+
     init {
         refresh()
         // 屏幕事件/位置变化时联动刷新统计
@@ -60,6 +71,40 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
                 recomputeSummary(_appSegments.value, screens, locs)
             }
         }
+    }
+
+    /**
+     * 把数据库里所有位置记录用最新 Geocoder 逻辑重新跑一遍。
+     * 节流 250ms 防止 Geocoder 限流。
+     */
+    fun backfillAddresses() {
+        if (_backfill.value is BackfillState.Running) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ctx = getApplication<Application>()
+            val all = dao.getAllLocationRecords()
+            if (all.isEmpty()) {
+                _backfill.value = BackfillState.Finished(0, 0)
+                return@launch
+            }
+            _backfill.value = BackfillState.Running(0, all.size)
+            var updated = 0
+            for ((i, rec) in all.withIndex()) {
+                val newAddr = GeocoderHelper.reverseGeocode(ctx, rec.latitude, rec.longitude)
+                if (newAddr.isNotBlank() && newAddr != rec.address &&
+                    !newAddr.contains("失败") && !newAddr.contains("未知")
+                ) {
+                    dao.updateLocationAddress(rec.id, newAddr)
+                    updated++
+                }
+                _backfill.value = BackfillState.Running(i + 1, all.size)
+                delay(250) // 节流，避免 Geocoder 限流
+            }
+            _backfill.value = BackfillState.Finished(updated, all.size)
+        }
+    }
+
+    fun dismissBackfill() {
+        _backfill.value = BackfillState.Idle
     }
 
     /** 重新从系统读取 UsageStats（轻量、阻塞 IO）。 */

@@ -16,7 +16,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -38,35 +40,89 @@ import java.util.Locale
 @Composable
 fun LocationsScreen(vm: TimelineViewModel = viewModel()) {
     val locs by vm.locationRecords.collectAsState()
+    val backfill by vm.backfill.collectAsState()
 
-    if (locs.isEmpty()) {
-        Column(
-            Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text("📍", style = MaterialTheme.typography.displayMedium)
-            Spacer(Modifier.height(8.dp))
-            Text("今天还没有位置记录", color = Color.Gray)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "位置每 15 分钟自动采样一次",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.Gray,
-            )
+    Column(Modifier.fillMaxSize()) {
+        BackfillBar(backfill, onClick = vm::backfillAddresses, onDismiss = vm::dismissBackfill)
+
+        if (locs.isEmpty()) {
+            Column(
+                Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("📍", style = MaterialTheme.typography.displayMedium)
+                Spacer(Modifier.height(8.dp))
+                Text("今天还没有位置记录", color = Color.Gray)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "位置每 15 分钟自动采样一次",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray,
+                )
+            }
+            return
         }
-        return
+
+        // 按地址聚合连续相同点（"在同一个地方待了多久"）
+        val groups = remember(locs) { groupConsecutive(locs) }
+
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(groups, key = { it.first().id }) { group -> LocationGroupCard(group) }
+        }
     }
+}
 
-    // 按地址聚合连续相同点（"在同一个地方待了多久"）
-    val groups = remember(locs) { groupConsecutive(locs) }
-
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(groups, key = { it.first().id }) { group -> LocationGroupCard(group) }
+@Composable
+private fun BackfillBar(
+    state: TimelineViewModel.BackfillState,
+    onClick: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    when (state) {
+        TimelineViewModel.BackfillState.Idle -> {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("📍 今日位置", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = onClick) { Text("重新解析地址") }
+            }
+        }
+        is TimelineViewModel.BackfillState.Running -> {
+            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                Text("正在解析地址 ${state.done}/${state.total}…",
+                    style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                Spacer(Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = { state.done.toFloat() / state.total.coerceAtLeast(1) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        is TimelineViewModel.BackfillState.Finished -> {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "✅ 已更新 ${state.updated} / ${state.total} 条",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color(0xFF2E7D32),
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedButton(onClick = onDismiss) { Text("好的") }
+            }
+        }
     }
 }
 
