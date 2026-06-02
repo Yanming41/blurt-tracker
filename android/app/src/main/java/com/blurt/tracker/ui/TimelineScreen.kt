@@ -87,8 +87,9 @@ private val LINE_X = 56.dp
 private val EVENT_LEFT_PADDING = 8.dp
 private val RIGHT_PADDING = 12.dp
 private const val MIN_HOUR_HEIGHT = 32f
-private const val MAX_HOUR_HEIGHT = 240f
+private const val MAX_HOUR_HEIGHT = 1800f          // 30dp/分钟，分钟级精度
 private const val DEFAULT_HOUR_HEIGHT = 64f
+private const val ZOOM_FACTOR = 1.6f               // 每次 +/- 的倍率
 
 // 用于泳道布局
 private data class PositionedSegment(
@@ -301,10 +302,10 @@ private fun ZoomControls(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.End,
     ) {
-        FilledTonalIconButton(onClick = { onChange(hourHeightDp * 1.4f) }) {
+        FilledTonalIconButton(onClick = { onChange(hourHeightDp * ZOOM_FACTOR) }) {
             Text("➕", style = MaterialTheme.typography.titleMedium)
         }
-        FilledTonalIconButton(onClick = { onChange(hourHeightDp * 0.7f) }) {
+        FilledTonalIconButton(onClick = { onChange(hourHeightDp / ZOOM_FACTOR) }) {
             Text("➖", style = MaterialTheme.typography.titleMedium)
         }
     }
@@ -314,6 +315,16 @@ private fun ZoomControls(
 private fun TimeScaleCanvas(totalHours: Int, hourHeightDp: Float) {
     val labelColor = Color.Gray
     val lineColor = Color(0xFFE0E0E0)
+    val minorColor = Color(0xFFEEEEEE)
+
+    // 根据缩放决定细分粒度（分钟），并决定是否显示分钟标签
+    val (minorMinutes, showMinorLabel) = when {
+        hourHeightDp >= 600f -> 1 to true   // 每分钟一条 + 标签
+        hourHeightDp >= 300f -> 5 to true   // 每 5 分钟一条 + 标签
+        hourHeightDp >= 150f -> 15 to true  // 每 15 分钟一条 + 标签
+        hourHeightDp >= 90f -> 30 to false  // 每 30 分钟一条，不标签
+        else -> 0 to false                  // 不显示细分
+    }
 
     Canvas(modifier = Modifier.fillMaxSize()) {
         val hourPx = hourHeightDp.dp.toPx()
@@ -327,30 +338,72 @@ private fun TimeScaleCanvas(totalHours: Int, hourHeightDp: Float) {
             strokeWidth = 1.dp.toPx(),
         )
 
-        // 每小时刻度横线
-        val tickW = 8.dp.toPx()
+        // 主刻度（每小时）
+        val majorTickW = 8.dp.toPx()
+        val minorTickW = 4.dp.toPx()
         for (h in 0..totalHours) {
             val y = h * hourPx
             drawLine(
                 color = lineColor,
-                start = Offset(linePx - tickW / 2f, y),
-                end = Offset(linePx + tickW / 2f, y),
+                start = Offset(linePx - majorTickW / 2f, y),
+                end = Offset(linePx + majorTickW / 2f, y),
                 strokeWidth = 1.dp.toPx(),
             )
         }
 
-        // 小时文字标签
+        // 副刻度（每 minorMinutes 分钟）
+        if (minorMinutes > 0) {
+            val minutePx = hourPx / 60f
+            for (h in 0 until totalHours) {
+                var m = minorMinutes
+                while (m < 60) {
+                    val y = h * hourPx + m * minutePx
+                    drawLine(
+                        color = minorColor,
+                        start = Offset(linePx - minorTickW / 2f, y),
+                        end = Offset(linePx + minorTickW / 2f, y),
+                        strokeWidth = 0.5.dp.toPx(),
+                    )
+                    m += minorMinutes
+                }
+            }
+        }
+
+        // 文字标签
         drawIntoCanvas { canvas ->
-            val paint = android.graphics.Paint().apply {
+            val majorPaint = android.graphics.Paint().apply {
                 color = labelColor.toArgb()
                 textSize = 10.sp.toPx()
                 typeface = android.graphics.Typeface.MONOSPACE
                 isAntiAlias = true
             }
+            val minorPaint = android.graphics.Paint().apply {
+                color = labelColor.toArgb()
+                textSize = 8.sp.toPx()
+                typeface = android.graphics.Typeface.MONOSPACE
+                isAntiAlias = true
+                alpha = 160
+            }
+
+            // 主标签（小时）
             for (h in 0..totalHours) {
                 val hourLabel = "%02d:00".format(TimelineViewModel.TIMELINE_START_HOUR + h)
-                val y = h * hourPx + paint.textSize / 2f
-                canvas.nativeCanvas.drawText(hourLabel, 4f, y, paint)
+                val y = h * hourPx + majorPaint.textSize / 2f
+                canvas.nativeCanvas.drawText(hourLabel, 4f, y, majorPaint)
+            }
+
+            // 副标签（分钟）
+            if (showMinorLabel && minorMinutes > 0) {
+                val minutePx = hourPx / 60f
+                for (h in 0 until totalHours) {
+                    var m = minorMinutes
+                    while (m < 60) {
+                        val label = "%02d:%02d".format(TimelineViewModel.TIMELINE_START_HOUR + h, m)
+                        val y = h * hourPx + m * minutePx + minorPaint.textSize / 2f
+                        canvas.nativeCanvas.drawText(label, 4f, y, minorPaint)
+                        m += minorMinutes
+                    }
+                }
             }
         }
     }
@@ -367,7 +420,7 @@ private fun AppSegmentCard(
 ) {
     val seg = ps.seg
     val yDp = msToDpValue(seg.startTime - zeroMs, hourHeightDp).dp
-    val heightDp = msToDpValue(seg.durationMs, hourHeightDp).dp.coerceAtLeast(24.dp)
+    val heightDp = msToDpValue(seg.durationMs, hourHeightDp).dp.coerceAtLeast(16.dp)
     val palette = paletteFor(seg.packageName, seg.appName)
 
     Box(
