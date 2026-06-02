@@ -17,6 +17,7 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -66,10 +67,10 @@ class LocationWorker(
         val cts = CancellationTokenSource()
         return try {
             @Suppress("MissingPermission")
-            suspendCancellableCoroutine { cont ->
+            suspendCancellableCoroutine<Location?> { cont ->
                 fused.getCurrentLocation(priority, cts.token)
-                    .addOnSuccessListener { cont.resumeWith(Result.success(it)) }
-                    .addOnFailureListener { cont.resumeWith(Result.success(null)) }
+                    .addOnSuccessListener { cont.resume(it) }
+                    .addOnFailureListener { cont.resume(null) }
                 cont.invokeOnCancellation { cts.cancel() }
             }
         } catch (e: Exception) {

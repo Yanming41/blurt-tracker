@@ -29,6 +29,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -184,7 +187,7 @@ private fun SevenDayLineChart(data: List<Pair<String, Long>>) {
                 val y = toY(ms)
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
-            drawPath(path, lineColor, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f))
+            drawPath(path, lineColor, style = Stroke(width = 3f))
 
             // 点
             data.forEachIndexed { i, (_, ms) ->
