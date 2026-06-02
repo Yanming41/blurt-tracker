@@ -3,8 +3,6 @@ package com.blurt.tracker.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -23,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -207,11 +206,8 @@ private fun TimelineCanvas(
     val dayStart = TimelineViewModel.startOfToday()
     val zeroMs = dayStart + TimelineViewModel.TIMELINE_START_HOUR * 3600_000L
 
-    // 双指缩放：调整每小时高度
+    // 用按钮调整每小时高度（pinch 跟 verticalScroll 抢手势没法用）
     var hourHeightDp by remember { mutableFloatStateOf(DEFAULT_HOUR_HEIGHT) }
-    val transformState = rememberTransformableState { zoomChange, _, _ ->
-        hourHeightDp = (hourHeightDp * zoomChange).coerceIn(MIN_HOUR_HEIGHT, MAX_HOUR_HEIGHT)
-    }
 
     val totalHeight = (hourHeightDp * totalHours).dp
 
@@ -235,20 +231,21 @@ private fun TimelineCanvas(
     val positioned = remember(segments) { assignLanes(segments) }
     val maxLanes = positioned.maxOfOrNull { it.totalLanes } ?: 1
 
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .transformable(state = transformState)
-            .verticalScroll(scroll),
-    ) {
-        val plotWidth = maxWidth - LINE_X - EVENT_LEFT_PADDING - RIGHT_PADDING
-        val laneGap = 4.dp
-        val laneWidth = (plotWidth - laneGap * (maxLanes - 1)) / maxLanes
-
-        Box(
-            Modifier.fillMaxWidth().height(totalHeight),
+    // 外层 Box 用来叠放：可滚动的时间轴 + 浮动缩放按钮
+    Box(Modifier.fillMaxSize()) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scroll),
         ) {
-            TimeScaleCanvas(totalHours, hourHeightDp)
+            val plotWidth = maxWidth - LINE_X - EVENT_LEFT_PADDING - RIGHT_PADDING
+            val laneGap = 4.dp
+            val laneWidth = (plotWidth - laneGap * (maxLanes - 1)) / maxLanes
+
+            Box(
+                Modifier.fillMaxWidth().height(totalHeight),
+            ) {
+                TimeScaleCanvas(totalHours, hourHeightDp)
 
             // 息屏灰块（占满整个泳道区域宽度）
             screenIdlesFromEvents(screens, zeroMs).forEach { (s, e) ->
@@ -277,8 +274,38 @@ private fun TimelineCanvas(
                 LocationDotMark(loc, zeroMs, hourHeightDp) { onLocationClick(loc) }
             }
 
-            // 当前时间红线
-            NowLine(nowMs = nowMs, zeroMs = zeroMs, hourHeightDp = hourHeightDp)
+                // 当前时间红线
+                NowLine(nowMs = nowMs, zeroMs = zeroMs, hourHeightDp = hourHeightDp)
+            }
+        }
+
+        // 浮动缩放按钮（右下角，悬在时间轴上层）
+        ZoomControls(
+            hourHeightDp = hourHeightDp,
+            onChange = { hourHeightDp = it.coerceIn(MIN_HOUR_HEIGHT, MAX_HOUR_HEIGHT) },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 16.dp),
+        )
+    }
+}
+
+@Composable
+private fun ZoomControls(
+    hourHeightDp: Float,
+    onChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        FilledTonalIconButton(onClick = { onChange(hourHeightDp * 1.4f) }) {
+            Text("➕", style = MaterialTheme.typography.titleMedium)
+        }
+        FilledTonalIconButton(onClick = { onChange(hourHeightDp * 0.7f) }) {
+            Text("➖", style = MaterialTheme.typography.titleMedium)
         }
     }
 }
