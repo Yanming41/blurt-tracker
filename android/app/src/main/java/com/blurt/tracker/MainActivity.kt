@@ -158,6 +158,13 @@ private fun PermissionScreen(
                 actionText = "申请权限",
                 onClick = onRequestLoc,
             )
+            if (!hasLoc) {
+                Text(
+                    "⚠️ 系统弹窗时请选「精确位置」，否则地址解析只能到城市级，无法显示街道。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = androidx.compose.ui.graphics.Color(0xFFB26A00),
+                )
+            }
 
             PermRow(
                 label = "3. 通知权限",

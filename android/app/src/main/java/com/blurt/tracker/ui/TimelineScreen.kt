@@ -405,14 +405,22 @@ private fun SegmentDetail(seg: AppSegment, locations: List<LocationRecord>) {
 @Composable
 private fun LocationDetail(loc: LocationRecord) {
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    var showCoord by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(16.dp)) {
-        Text("📍 ${loc.address}", style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Text(timeFmt.format(Date(loc.timestamp)), style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(4.dp))
-        Text("${"%.5f".format(loc.latitude)}, ${"%.5f".format(loc.longitude)}",
-            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        Text("📍 ${loc.address.ifEmpty { "未知位置" }}",
+            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(6.dp))
+        Text(timeFmt.format(Date(loc.timestamp)),
+            style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = if (showCoord)
+                "坐标 ${"%.5f".format(loc.latitude)}, ${"%.5f".format(loc.longitude)}"
+            else "查看坐标",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFF1976D2),
+            modifier = Modifier.clickable { showCoord = !showCoord },
+        )
         Spacer(Modifier.height(20.dp))
     }
 }

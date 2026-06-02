@@ -84,9 +84,30 @@ class LocationWorker(
             @Suppress("DEPRECATION")
             val list = geocoder.getFromLocation(lat, lon, 1)
             val a = list?.firstOrNull() ?: return "未知位置"
-            val name = a.subLocality ?: a.locality ?: a.thoroughfare ?: a.adminArea
-                ?: a.featureName ?: "未知位置"
-            "${name}附近"
+
+            // 优先用系统拼好的完整地址行（中文一般是「省+市+区+街道+门牌」）
+            val line0 = a.getAddressLine(0)?.trim()
+            if (!line0.isNullOrEmpty()) {
+                // 去掉冗余的国家名前缀，让显示更短
+                return line0
+                    .removePrefix("中国")
+                    .removePrefix("中華人民共和國")
+                    .trim()
+                    .ifEmpty { "未知位置" }
+            }
+
+            // Fallback：手动拼街道 + 街区 + 城市
+            val parts = listOfNotNull(
+                a.thoroughfare,         // 街道
+                a.subLocality,          // 街区
+                a.locality,             // 城市
+            ).distinct()
+            if (parts.isNotEmpty()) return parts.joinToString("·")
+
+            // 最后兜底
+            a.featureName
+                ?: a.adminArea
+                ?: "未知位置"
         } catch (e: Exception) {
             "位置解析失败"
         }
