@@ -31,8 +31,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.blurt.tracker.data.LocationRecord
+import com.blurt.tracker.util.DebugTools
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -85,15 +91,24 @@ private fun BackfillBar(
 ) {
     when (state) {
         TimelineViewModel.BackfillState.Idle -> {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("📍 今日位置", style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = onClick) { Text("重新解析地址") }
+            val ctx = LocalContext.current
+            val scope = rememberCoroutineScope()
+            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("📍 今日位置", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    OutlinedButton(onClick = onClick) { Text("重新解析地址") }
+                }
+                Spacer(Modifier.height(6.dp))
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                DebugTools.dumpUsageEventsLast24h(ctx)
+                            }
+                        }
+                    },
+                ) { Text("🔬 Dump UsageEvents → Logcat") }
             }
         }
         is TimelineViewModel.BackfillState.Running -> {
