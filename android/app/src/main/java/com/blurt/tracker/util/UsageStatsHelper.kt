@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.os.Build
+import com.blurt.tracker.data.ScreenEvent
 import java.util.Calendar
 
 /** 今日某 App 的使用汇总 */
@@ -147,6 +148,40 @@ object UsageStatsHelper {
         null
     }
 
+    /**
+     * 从系统 UsageEvents 读今天的屏幕状态事件（API 28+）。
+     * 不受 App 进程是否活着影响 —— 系统全程在记录。
+     *
+     *   15 SCREEN_INTERACTIVE       -> "亮屏"
+     *   16 SCREEN_NON_INTERACTIVE   -> "息屏"
+     *   17 KEYGUARD_HIDDEN          -> "解锁"
+     *   18 KEYGUARD_SHOWN           -> "锁屏"
+     *
+     * 老版本 (< API 28) 返回空列表，让原 ScreenReceiver 数据顶上。
+     */
+    fun getTodayScreenEvents(context: Context): List<ScreenEvent> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return emptyList()
+        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        val start = startOfToday()
+        val now = System.currentTimeMillis()
+
+        val typeMap = mapOf(
+            15 to "亮屏",
+            16 to "息屏",
+            17 to "解锁",
+            18 to "锁屏",
+        )
+        val out = mutableListOf<ScreenEvent>()
+        val events = usm.queryEvents(start, now)
+        val ev = UsageEvents.Event()
+        while (events.hasNextEvent()) {
+            events.getNextEvent(ev)
+            val type = typeMap[ev.eventType] ?: continue
+            out += ScreenEvent(eventType = type, timestamp = ev.timeStamp)
+        }
+        return out
+    }
+
     // ---------- 内部 ----------
 
     private fun queryEvents(
@@ -225,7 +260,7 @@ object UsageStatsHelper {
         pkg
     }
 
-    private fun startOfToday(): Long {
+    fun startOfToday(): Long {
         val c = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
             set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)

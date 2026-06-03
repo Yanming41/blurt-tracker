@@ -111,8 +111,9 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
     fun refresh() {
         viewModelScope.launch(Dispatchers.IO) {
             val ctx = getApplication<Application>()
+
+            // ---- 1. App 使用段 ----
             val rawEvents = UsageStatsHelper.getTodayEvents(ctx)
-            // 给每条事件补 appName + icon
             val enriched = rawEvents.map {
                 it.copy(
                     appName = UsageStatsHelper.resolveAppName(ctx, it.packageName),
@@ -126,8 +127,35 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
             _appSegments.value = segments
+
+            // ---- 2. 屏幕事件：从系统 UsageEvents 全量回收 ----
+            syncScreenEventsFromUsageEvents(ctx)
+
             recomputeSummary(segments, screenEvents.value, locationRecords.value)
         }
+    }
+
+    /**
+     * 把今天系统 UsageEvents 里的屏幕事件去重后写入 Room。
+     * Receiver 已写的不重复插入（按 eventType + timestamp 判重）。
+     */
+    private suspend fun syncScreenEventsFromUsageEvents(ctx: android.content.Context) {
+        val fromSystem = UsageStatsHelper.getTodayScreenEvents(ctx)
+        if (fromSystem.isEmpty()) return
+        val day0 = UsageStatsHelper.startOfToday()
+        val dayEnd = day0 + DAY_MS
+        val existing = dao.getScreenEventsBetween(day0, dayEnd)
+        val existingKeys = existing.map { it.eventType to it.timestamp }.toHashSet()
+        var inserted = 0
+        for (e in fromSystem) {
+            val key = e.eventType to e.timestamp
+            if (key !in existingKeys) {
+                dao.insertScreenEvent(e)
+                inserted++
+            }
+        }
+        android.util.Log.i("BLURT_DEBUG",
+            "[syncScreenEvents] system=${fromSystem.size}, existing=${existing.size}, inserted=$inserted")
     }
 
     private fun recomputeSummary(
