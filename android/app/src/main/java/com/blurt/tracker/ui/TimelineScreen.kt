@@ -1,6 +1,8 @@
 package com.blurt.tracker.ui
 
+import android.graphics.drawable.Drawable
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -54,12 +56,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
 import com.blurt.tracker.data.ActivityBlock
 import com.blurt.tracker.data.Glance
 import com.blurt.tracker.data.LocationRecord
 import com.blurt.tracker.data.ScreenEvent
 import com.blurt.tracker.util.AppCategory
+import com.blurt.tracker.util.AppDisplayName
 import com.blurt.tracker.util.AppSegment
+import com.blurt.tracker.util.UsageStatsHelper
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -611,11 +617,25 @@ private fun ActivityBlockCard(
     expanded: Boolean,
     onClick: () -> Unit,
 ) {
+    val ctx = LocalContext.current
     val yDp = msToDpValue(block.startTime - zeroMs, hourHeightDp).dp.coerceAtLeast(0.dp)
     val heightDp = msToDpValue(block.durationMs, hourHeightDp).dp.coerceAtLeast(28.dp)
     val palette = categoryPalette(block.category)
     val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val alpha = if (expanded) 0.35f else 1.0f
+
+    // 显示名 + 图标都在 render time 解析，避免 DB 里有过时的包名字符串
+    val displayName = remember(block.dominantAppPackage, block.dominantAppName) {
+        // 如果 DB 里存的是合理名字直接用；否则重新解析
+        val stored = block.dominantAppName
+        if (stored.isBlank() || stored == block.dominantAppPackage ||
+            stored.matches(Regex("[a-z]+(\\.[a-z0-9_]+)+"))
+        ) AppDisplayName.resolve(ctx, block.dominantAppPackage) else stored
+    }
+    val iconBitmap = remember(block.dominantAppPackage) {
+        UsageStatsHelper.getAppIcon(ctx, block.dominantAppPackage)?.toSafeBitmap()
+    }
+
     Box(
         modifier = Modifier
             .offset(x = LINE_X + EVENT_LEFT_PADDING, y = yDp)
@@ -630,31 +650,50 @@ private fun ActivityBlockCard(
                 )
             }
             .clickable { onClick() }
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
         contentAlignment = Alignment.TopStart,
     ) {
-        Column {
-            val label = block.activityLabel
-                ?: "${categoryEmoji(block.category)} ${categoryDisplay(block.category)}"
-            Text(
-                text = label,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = palette.border,
-                maxLines = 1,
-            )
-            if (heightDp >= 48.dp) {
-                Text(
-                    text = "${timeFmt.format(Date(block.startTime))}–${timeFmt.format(Date(block.endTime))}  ·  " +
-                        "${formatHM(block.durationMs)}  ·  ${block.dominantAppName}" +
-                        if (block.interruptionCount > 0) "  ·  打扰${block.interruptionCount}次" else "",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = palette.border.copy(alpha = 0.85f),
-                    maxLines = 2,
+        Row(verticalAlignment = Alignment.Top) {
+            if (iconBitmap != null) {
+                Image(
+                    bitmap = iconBitmap,
+                    contentDescription = null,
+                    modifier = Modifier.width(20.dp).height(20.dp),
                 )
+                Spacer(Modifier.width(6.dp))
+            }
+            Column {
+                val label = block.activityLabel
+                    ?: "${categoryEmoji(block.category)} ${categoryDisplay(block.category)}"
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.border,
+                    maxLines = 1,
+                )
+                if (heightDp >= 48.dp) {
+                    Text(
+                        text = "${timeFmt.format(Date(block.startTime))}–${timeFmt.format(Date(block.endTime))}  ·  " +
+                            "${formatHM(block.durationMs)}  ·  $displayName" +
+                            if (block.interruptionCount > 0) "  ·  打扰${block.interruptionCount}次" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.border.copy(alpha = 0.85f),
+                        maxLines = 2,
+                    )
+                }
             }
         }
     }
+}
+
+/** 把 Drawable 转成 ImageBitmap（如果转换失败返回 null） */
+private fun Drawable.toSafeBitmap(): androidx.compose.ui.graphics.ImageBitmap? = try {
+    val w = if (intrinsicWidth > 0) intrinsicWidth.coerceAtMost(192) else 96
+    val h = if (intrinsicHeight > 0) intrinsicHeight.coerceAtMost(192) else 96
+    toBitmap(width = w, height = h).asImageBitmap()
+} catch (e: Exception) {
+    null
 }
 
 @Composable

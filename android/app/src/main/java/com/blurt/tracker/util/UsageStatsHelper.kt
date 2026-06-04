@@ -266,12 +266,8 @@ object UsageStatsHelper {
         )
     }
 
-    fun resolveAppName(context: Context, pkg: String): String = try {
-        val pm = context.packageManager
-        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
-    } catch (e: PackageManager.NameNotFoundException) {
-        pkg
-    }
+    fun resolveAppName(context: Context, pkg: String): String =
+        AppDisplayName.resolve(context, pkg)
 
     fun startOfToday(): Long {
         val c = Calendar.getInstance().apply {
