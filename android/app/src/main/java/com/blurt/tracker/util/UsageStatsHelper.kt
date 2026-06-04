@@ -86,16 +86,27 @@ object UsageStatsHelper {
 
     // ---------- 读取 ----------
 
-    /**
-     * 今日 0 点到现在，每个 App 的使用汇总。
-     * - 总时长 > 60s
-     * - 排除系统 App 和自身
-     * - 按总时长降序
-     */
+    /** 给定时间区间内每个 App 的使用汇总。 */
+    fun getAppUsageBetween(context: Context, start: Long, end: Long): List<AppUsageInfo> {
+        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        return getAppUsageInner(context, usm, start, end)
+    }
+
+    /** 今日 0 点到现在 - 旧入口，保留向后兼容 */
     fun getTodayAppUsage(context: Context): List<AppUsageInfo> {
         val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val start = startOfToday()
         val now = System.currentTimeMillis()
+        return getAppUsageInner(context, usm, start, now)
+    }
+
+    private fun getAppUsageInner(
+        context: Context,
+        usm: UsageStatsManager,
+        start: Long,
+        end: Long,
+    ): List<AppUsageInfo> {
+        val now = end
 
         // queryUsageStats 在某些 ROM 上不返回 firstTimeUsed，所以我们用 events 自己算
         val byPkg = mutableMapOf<String, MutableList<AppEvent>>()
@@ -120,15 +131,16 @@ object UsageStatsHelper {
         }.sortedByDescending { it.totalTimeMs }
     }
 
-    /**
-     * 今日所有 RESUMED / PAUSED 事件（按时间正序）。
-     * 已经过滤系统包。
-     */
-    fun getTodayEvents(context: Context): List<AppEvent> {
+    /** 给定时间区间内所有 RESUMED/PAUSED 事件，过滤系统包 */
+    fun getEventsBetween(context: Context, start: Long, end: Long): List<AppEvent> {
         val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        return queryEvents(usm, startOfToday(), System.currentTimeMillis())
+        return queryEvents(usm, start, end)
             .filter { it.packageName !in SYSTEM_PACKAGES && it.packageName != context.packageName }
     }
+
+    /** 今日 0 点到现在 - 旧入口，保留向后兼容 */
+    fun getTodayEvents(context: Context): List<AppEvent> =
+        getEventsBetween(context, startOfToday(), System.currentTimeMillis())
 
     /**
      * 把事件配对成时间段。
@@ -159,12 +171,13 @@ object UsageStatsHelper {
      *
      * 老版本 (< API 28) 返回空列表，让原 ScreenReceiver 数据顶上。
      */
-    fun getTodayScreenEvents(context: Context): List<ScreenEvent> {
+    fun getTodayScreenEvents(context: Context): List<ScreenEvent> =
+        getScreenEventsBetween(context, startOfToday(), System.currentTimeMillis())
+
+    /** 给定时间区间从系统 UsageEvents 拉屏幕事件（API 28+） */
+    fun getScreenEventsBetween(context: Context, start: Long, end: Long): List<ScreenEvent> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return emptyList()
         val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        val start = startOfToday()
-        val now = System.currentTimeMillis()
-
         val typeMap = mapOf(
             15 to "亮屏",
             16 to "息屏",
@@ -172,7 +185,7 @@ object UsageStatsHelper {
             18 to "锁屏",
         )
         val out = mutableListOf<ScreenEvent>()
-        val events = usm.queryEvents(start, now)
+        val events = usm.queryEvents(start, end)
         val ev = UsageEvents.Event()
         while (events.hasNextEvent()) {
             events.getNextEvent(ev)

@@ -23,8 +23,12 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -168,6 +172,9 @@ fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
     val summary by vm.todaySummary.collectAsState()
     val blocks by vm.activityBlocks.collectAsState()
     val glances by vm.glances.collectAsState()
+    val selectedDay by vm.selectedDay.collectAsState()
+    val isToday by vm.isToday.collectAsState()
+    val historyBackfill by vm.historyBackfill.collectAsState()
 
     LaunchedEffect(Unit) { vm.refresh() }
 
@@ -176,6 +183,16 @@ fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
     val sheetState = rememberModalBottomSheetState()
 
     Column(Modifier.fillMaxSize()) {
+        DateHeader(
+            selectedDay = selectedDay,
+            isToday = isToday,
+            onPrev = vm::goPrevDay,
+            onNext = vm::goNextDay,
+            onToday = vm::goToday,
+            onBackfill = { vm.backfillPastDays(7) },
+            historyBackfill = historyBackfill,
+            onDismissBackfill = vm::dismissHistoryBackfill,
+        )
         StatsRow(summary)
         HorizontalDivider()
         TimelineCanvas(
@@ -197,6 +214,67 @@ fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
     sheetLocation?.let { loc ->
         ModalBottomSheet(onDismissRequest = { sheetLocation = null }, sheetState = sheetState) {
             LocationDetail(loc)
+        }
+    }
+}
+
+// =====================  Date Header  =====================
+
+@Composable
+private fun DateHeader(
+    selectedDay: Long,
+    isToday: Boolean,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onToday: () -> Unit,
+    onBackfill: () -> Unit,
+    historyBackfill: TimelineViewModel.HistoryBackfillState,
+    onDismissBackfill: () -> Unit,
+) {
+    val dateFmt = remember { SimpleDateFormat("yyyy-MM-dd EEE", Locale.getDefault()) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onPrev) { Text("◀") }
+            Text(
+                text = if (isToday) "今天" else dateFmt.format(Date(selectedDay)),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onNext, enabled = !isToday) {
+                Text("▶", color = if (isToday) Color.LightGray else Color.Unspecified)
+            }
+            if (!isToday) {
+                TextButton(onClick = onToday) { Text("今天") }
+            }
+        }
+        // 历史回灌状态/按钮
+        when (val s = historyBackfill) {
+            TimelineViewModel.HistoryBackfillState.Idle -> {
+                OutlinedButton(
+                    onClick = onBackfill,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                ) { Text("⏪ 回灌过去 7 天") }
+            }
+            is TimelineViewModel.HistoryBackfillState.Running -> {
+                Column(Modifier.padding(4.dp)) {
+                    Text("正在回灌 ${s.currentDay}  (${s.done}/${s.total})",
+                        style = MaterialTheme.typography.labelMedium)
+                    LinearProgressIndicator(
+                        progress = { s.done.toFloat() / s.total.coerceAtLeast(1) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+            is TimelineViewModel.HistoryBackfillState.Finished -> {
+                Row(Modifier.padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("✅ 回灌完成 ${s.daysProcessed} 天，新建 ${s.blocksCreated} 个块",
+                        modifier = Modifier.weight(1f),
+                        color = Color(0xFF2E7D32),
+                        style = MaterialTheme.typography.labelMedium)
+                    TextButton(onClick = onDismissBackfill) { Text("好") }
+                }
+            }
         }
     }
 }

@@ -15,10 +15,12 @@ import com.blurt.tracker.util.GeocoderHelper
 import com.blurt.tracker.util.UsageStatsHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.Calendar
@@ -30,35 +32,52 @@ data class TodaySummary(
     val locationCount: Int = 0,
 )
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class TimelineViewModel(app: Application) : AndroidViewModel(app) {
 
     private val dao = TrackerDatabase.get(app).trackerDao()
 
-    private val dayStart = startOfToday()
-    private val dayEnd = dayStart + DAY_MS
+    // ====== 当前正在查看的"日"，0 点时间戳 ======
+    private val _selectedDay = MutableStateFlow(startOfToday())
+    val selectedDay: StateFlow<Long> = _selectedDay.asStateFlow()
 
+    /** 是否在看今天 */
+    val isToday: StateFlow<Boolean> = MutableStateFlow(true).also { mf ->
+        viewModelScope.launch {
+            _selectedDay.collect { mf.value = (it == startOfToday()) }
+        }
+    }
+
+    fun goPrevDay() { _selectedDay.value = _selectedDay.value - DAY_MS }
+    fun goNextDay() {
+        val next = _selectedDay.value + DAY_MS
+        if (next <= startOfToday()) _selectedDay.value = next
+    }
+    fun goToday() { _selectedDay.value = startOfToday() }
+
+    // ====== 数据流：跟着 _selectedDay 切换 ======
     private val _appSegments = MutableStateFlow<List<AppSegment>>(emptyList())
     val appSegments: StateFlow<List<AppSegment>> = _appSegments.asStateFlow()
 
-    val locationRecords: StateFlow<List<LocationRecord>> =
-        dao.observeLocationRecordsBetween(dayStart, dayEnd)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val locationRecords: StateFlow<List<LocationRecord>> = _selectedDay
+        .flatMapLatest { d -> dao.observeLocationRecordsBetween(d, d + DAY_MS) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val screenEvents: StateFlow<List<ScreenEvent>> =
-        dao.observeScreenEventsBetween(dayStart, dayEnd)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val screenEvents: StateFlow<List<ScreenEvent>> = _selectedDay
+        .flatMapLatest { d -> dao.observeScreenEventsBetween(d, d + DAY_MS) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val moodEntries: StateFlow<List<MoodEntry>> =
-        dao.observeMoodEntriesBetween(dayStart, dayEnd)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val moodEntries: StateFlow<List<MoodEntry>> = _selectedDay
+        .flatMapLatest { d -> dao.observeMoodEntriesBetween(d, d + DAY_MS) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val activityBlocks: StateFlow<List<ActivityBlock>> =
-        dao.observeBlocksBetween(dayStart, dayEnd)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val activityBlocks: StateFlow<List<ActivityBlock>> = _selectedDay
+        .flatMapLatest { d -> dao.observeBlocksBetween(d, d + DAY_MS) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val glances: StateFlow<List<Glance>> =
-        dao.observeGlancesBetween(dayStart, dayEnd)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val glances: StateFlow<List<Glance>> = _selectedDay
+        .flatMapLatest { d -> dao.observeGlancesBetween(d, d + DAY_MS) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _summary = MutableStateFlow(TodaySummary())
     val todaySummary: StateFlow<TodaySummary> = _summary.asStateFlow()
@@ -72,22 +91,32 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
     private val _backfill = MutableStateFlow<BackfillState>(BackfillState.Idle)
     val backfill: StateFlow<BackfillState> = _backfill.asStateFlow()
 
+    // ----- 历史日数据回灌进度 -----
+    sealed interface HistoryBackfillState {
+        data object Idle : HistoryBackfillState
+        data class Running(val currentDay: String, val done: Int, val total: Int) : HistoryBackfillState
+        data class Finished(val daysProcessed: Int, val blocksCreated: Int) : HistoryBackfillState
+    }
+    private val _historyBackfill = MutableStateFlow<HistoryBackfillState>(HistoryBackfillState.Idle)
+    val historyBackfill: StateFlow<HistoryBackfillState> = _historyBackfill.asStateFlow()
+
     init {
-        refresh()
+        // 切日时自动 refresh
+        viewModelScope.launch {
+            _selectedDay.collect { _ -> refresh() }
+        }
         // 屏幕事件/位置变化时联动刷新统计
         viewModelScope.launch {
             kotlinx.coroutines.flow.combine(
                 screenEvents, locationRecords,
-            ) { screens, locs -> screens to locs }.collect { (screens, locs) ->
-                recomputeSummary(_appSegments.value, screens, locs)
+            ) { s, l -> s to l }.collect { (s, l) ->
+                recomputeSummary(_appSegments.value, s, l)
             }
         }
     }
 
-    /**
-     * 把数据库里所有位置记录用最新 Geocoder 逻辑重新跑一遍。
-     * 节流 250ms 防止 Geocoder 限流。
-     */
+    // ============== 地址回填（旧功能保留）==============
+
     fun backfillAddresses() {
         if (_backfill.value is BackfillState.Running) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -108,23 +137,99 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
                     updated++
                 }
                 _backfill.value = BackfillState.Running(i + 1, all.size)
-                delay(250) // 节流，避免 Geocoder 限流
+                delay(250)
             }
             _backfill.value = BackfillState.Finished(updated, all.size)
         }
     }
 
-    fun dismissBackfill() {
-        _backfill.value = BackfillState.Idle
+    fun dismissBackfill() { _backfill.value = BackfillState.Idle }
+
+    // ============== 历史日数据回灌（新）==============
+
+    /**
+     * 回灌过去 N 天的数据：
+     * - 拉 UsageEvents (App 段 + 屏幕事件)
+     * - 写 Room (screen_events 去重)
+     * - 跑 BlockBuilder 产出 ActivityBlock + Glance
+     *
+     * UsageStats 通常保留 7 天明细，再往前会失败/空。
+     */
+    fun backfillPastDays(days: Int = 7) {
+        if (_historyBackfill.value is HistoryBackfillState.Running) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ctx = getApplication<Application>()
+            val today = startOfToday()
+            var totalBlocks = 0
+            val labelFmt = java.text.SimpleDateFormat("MM-dd", java.util.Locale.getDefault())
+            for (i in 1..days) {
+                val day = today - i * DAY_MS
+                _historyBackfill.value = HistoryBackfillState.Running(
+                    currentDay = labelFmt.format(java.util.Date(day)),
+                    done = i - 1, total = days,
+                )
+                totalBlocks += processDay(ctx, day)
+            }
+            _historyBackfill.value = HistoryBackfillState.Finished(days, totalBlocks)
+        }
     }
 
-    /** 重新从系统读取 UsageStats（轻量、阻塞 IO）。 */
+    fun dismissHistoryBackfill() { _historyBackfill.value = HistoryBackfillState.Idle }
+
+    /**
+     * 处理一天：拉 UsageStats + 切块 + 写库。
+     * 返回新建的块数（粗略指标）。
+     */
+    private suspend fun processDay(ctx: android.content.Context, day: Long): Int {
+        val dayEnd = day + DAY_MS
+
+        // 1. App 段
+        val rawEvents = UsageStatsHelper.getEventsBetween(ctx, day, dayEnd)
+        val enriched = rawEvents.map {
+            it.copy(
+                appName = UsageStatsHelper.resolveAppName(ctx, it.packageName),
+                appIcon = null, // 历史日不需要 icon
+            )
+        }
+        val segments = UsageStatsHelper.eventsToSegments(enriched).map {
+            it.copy(appName = UsageStatsHelper.resolveAppName(ctx, it.packageName))
+        }
+
+        // 2. 屏幕事件（去重）
+        val fromSystem = UsageStatsHelper.getScreenEventsBetween(ctx, day, dayEnd)
+        if (fromSystem.isNotEmpty()) {
+            val existing = dao.getScreenEventsBetween(day, dayEnd)
+            val existingKeys = existing.map { it.eventType to it.timestamp }.toHashSet()
+            for (e in fromSystem) {
+                if ((e.eventType to e.timestamp) !in existingKeys) dao.insertScreenEvent(e)
+            }
+        }
+
+        // 3. 切块（只删自动块，保留用户改过的）
+        dao.deleteAutoBlocksBetween(day, dayEnd)
+        dao.deleteGlancesBetween(day, dayEnd)
+        val result = BlockBuilder.build(
+            segments = segments,
+            screenEvents = dao.getScreenEventsBetween(day, dayEnd),
+            locations = dao.getLocationsBetween(day, dayEnd),
+        )
+        if (result.blocks.isNotEmpty()) dao.insertActivityBlocks(result.blocks)
+        if (result.glances.isNotEmpty()) dao.insertGlances(result.glances)
+
+        android.util.Log.i("BLURT_DEBUG",
+            "[backfill] day=$day segments=${segments.size} blocks=${result.blocks.size}")
+        return result.blocks.size
+    }
+
+    // ============== 单日 refresh（切日 + 用户点刷新都走这里）==============
+
     fun refresh() {
         viewModelScope.launch(Dispatchers.IO) {
             val ctx = getApplication<Application>()
+            val day = _selectedDay.value
+            val dayEnd = day + DAY_MS
 
-            // ---- 1. App 使用段 ----
-            val rawEvents = UsageStatsHelper.getTodayEvents(ctx)
+            val rawEvents = UsageStatsHelper.getEventsBetween(ctx, day, dayEnd)
             val enriched = rawEvents.map {
                 it.copy(
                     appName = UsageStatsHelper.resolveAppName(ctx, it.packageName),
@@ -139,26 +244,17 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
             }
             _appSegments.value = segments
 
-            // ---- 2. 屏幕事件：从系统 UsageEvents 全量回收 ----
-            syncScreenEventsFromUsageEvents(ctx)
-
-            // ---- 3. 切块：纯规则跑 BlockBuilder，写入 activity_blocks / glances ----
-            rebuildActivityBlocks(segments)
-
+            syncScreenEventsFromUsageEvents(ctx, day, dayEnd)
+            rebuildActivityBlocks(day, dayEnd, segments)
             recomputeSummary(segments, screenEvents.value, locationRecords.value)
         }
     }
 
-    /**
-     * 把今日的自动块与瞥一眼全删了重建。
-     * 用户手动修正过的块（manuallyCorrected=1）不删，下次重建时会和新块共存
-     * —— Phase 3 引入时再做 merge 逻辑。
-     */
-    private suspend fun rebuildActivityBlocks(segments: List<AppSegment>) {
-        val day0 = UsageStatsHelper.startOfToday()
-        val dayEnd = day0 + DAY_MS
-        dao.deleteAutoBlocksBetween(day0, dayEnd)
-        dao.deleteGlancesBetween(day0, dayEnd)
+    private suspend fun rebuildActivityBlocks(
+        dayStart: Long, dayEnd: Long, segments: List<AppSegment>,
+    ) {
+        dao.deleteAutoBlocksBetween(dayStart, dayEnd)
+        dao.deleteGlancesBetween(dayStart, dayEnd)
         val result = BlockBuilder.build(
             segments = segments,
             screenEvents = screenEvents.value,
@@ -167,19 +263,15 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
         if (result.blocks.isNotEmpty()) dao.insertActivityBlocks(result.blocks)
         if (result.glances.isNotEmpty()) dao.insertGlances(result.glances)
         android.util.Log.i("BLURT_DEBUG",
-            "[rebuildBlocks] segments=${segments.size}  blocks=${result.blocks.size}  glances=${result.glances.size}")
+            "[rebuildBlocks] day=$dayStart segments=${segments.size} blocks=${result.blocks.size}")
     }
 
-    /**
-     * 把今天系统 UsageEvents 里的屏幕事件去重后写入 Room。
-     * Receiver 已写的不重复插入（按 eventType + timestamp 判重）。
-     */
-    private suspend fun syncScreenEventsFromUsageEvents(ctx: android.content.Context) {
-        val fromSystem = UsageStatsHelper.getTodayScreenEvents(ctx)
+    private suspend fun syncScreenEventsFromUsageEvents(
+        ctx: android.content.Context, dayStart: Long, dayEnd: Long,
+    ) {
+        val fromSystem = UsageStatsHelper.getScreenEventsBetween(ctx, dayStart, dayEnd)
         if (fromSystem.isEmpty()) return
-        val day0 = UsageStatsHelper.startOfToday()
-        val dayEnd = day0 + DAY_MS
-        val existing = dao.getScreenEventsBetween(day0, dayEnd)
+        val existing = dao.getScreenEventsBetween(dayStart, dayEnd)
         val existingKeys = existing.map { it.eventType to it.timestamp }.toHashSet()
         var inserted = 0
         for (e in fromSystem) {
@@ -190,7 +282,7 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         android.util.Log.i("BLURT_DEBUG",
-            "[syncScreenEvents] system=${fromSystem.size}, existing=${existing.size}, inserted=$inserted")
+            "[syncScreenEvents] day=$dayStart system=${fromSystem.size} existing=${existing.size} inserted=$inserted")
     }
 
     private fun recomputeSummary(
@@ -208,7 +300,6 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         const val DAY_MS = 24 * 3600_000L
-        /** 时间轴可视范围（小时）—— 整天 */
         const val TIMELINE_START_HOUR = 0
         const val TIMELINE_END_HOUR = 24
 
