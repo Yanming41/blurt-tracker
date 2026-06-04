@@ -9,8 +9,10 @@ import com.blurt.tracker.data.LocationRecord
 import com.blurt.tracker.data.MoodEntry
 import com.blurt.tracker.data.ScreenEvent
 import com.blurt.tracker.data.TrackerDatabase
+import com.blurt.tracker.network.UploadClient
 import com.blurt.tracker.util.AppSegment
 import com.blurt.tracker.util.BlockBuilder
+import com.blurt.tracker.util.Config
 import com.blurt.tracker.util.GeocoderHelper
 import com.blurt.tracker.util.UsageStatsHelper
 import kotlinx.coroutines.delay
@@ -100,6 +102,16 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
     private val _historyBackfill = MutableStateFlow<HistoryBackfillState>(HistoryBackfillState.Idle)
     val historyBackfill: StateFlow<HistoryBackfillState> = _historyBackfill.asStateFlow()
 
+    // ----- 电脑端 LLM 同步状态 -----
+    sealed interface SyncState {
+        data object Idle : SyncState
+        data class Running(val step: String) : SyncState
+        data class Finished(val labeled: Int, val msg: String) : SyncState
+        data class Failed(val reason: String) : SyncState
+    }
+    private val _syncState = MutableStateFlow<SyncState>(SyncState.Idle)
+    val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
+
     init {
         // 切日时自动 refresh
         viewModelScope.launch {
@@ -175,6 +187,72 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun dismissHistoryBackfill() { _historyBackfill.value = HistoryBackfillState.Idle }
+
+    fun dismissSync() { _syncState.value = SyncState.Idle }
+
+    /**
+     * 三步同步：
+     *   1. 把当前查看日的块 push 给电脑
+     *   2. 触发电脑跑 LLM 标签
+     *   3. 拉回带标签的块，更新本地 (按 startTime 匹配)
+     */
+    fun syncWithDesktop() {
+        if (_syncState.value is SyncState.Running) return
+        val ctx = getApplication<Application>()
+        val baseUrl = Config.baseUrl(ctx)
+        if (baseUrl == null) {
+            _syncState.value = SyncState.Failed("还没配置电脑 IP")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val day = _selectedDay.value
+            val dayEnd = day + DAY_MS
+            val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .format(java.util.Date(day))
+
+            _syncState.value = SyncState.Running("正在上传块…")
+            val localBlocks = dao.getBlocksBetween(day, dayEnd)
+            if (localBlocks.isEmpty()) {
+                _syncState.value = SyncState.Failed("当天没有块可上传")
+                return@launch
+            }
+            val pushOk = UploadClient.uploadBlocks(baseUrl, dateStr, localBlocks)
+            if (!pushOk) {
+                _syncState.value = SyncState.Failed("上传失败，检查电脑连接")
+                return@launch
+            }
+
+            _syncState.value = SyncState.Running("正在让电脑跑 LLM…")
+            val labelOk = UploadClient.triggerLabeler(baseUrl, dateStr, force = false)
+            if (!labelOk) {
+                _syncState.value = SyncState.Failed("LLM 跑批失败（电脑端日志看看）")
+                return@launch
+            }
+
+            _syncState.value = SyncState.Running("正在拉回标签…")
+            val labels = UploadClient.fetchLabels(baseUrl, dateStr)
+            if (labels == null) {
+                _syncState.value = SyncState.Failed("拉标签失败")
+                return@launch
+            }
+            // 按 startTime 匹配回填
+            var updated = 0
+            for (lab in labels) {
+                val blk = dao.getBlockByStart(lab.startTime) ?: continue
+                if (blk.manuallyCorrected) continue
+                dao.updateBlockLabel(
+                    id = blk.id,
+                    label = lab.activityLabel,
+                    category = lab.category,
+                    conf = lab.confidence,
+                    reasoning = lab.reasoning,
+                    askUser = lab.askUser,
+                )
+                if (lab.activityLabel != null) updated++
+            }
+            _syncState.value = SyncState.Finished(updated, "已写回 $updated 个标签")
+        }
+    }
 
     /**
      * 处理一天：拉 UsageStats + 切块 + 写库。

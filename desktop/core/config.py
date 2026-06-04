@@ -19,6 +19,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "device_name": "游戏本",
     "api_host": "0.0.0.0",
     "api_port": 8000,
+    "mica_enabled": False,
 }
 
 

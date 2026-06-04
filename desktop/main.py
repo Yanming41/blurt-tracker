@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import logging
+import signal
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 from qfluentwidgets import setTheme, Theme
 
@@ -56,7 +57,7 @@ def main() -> int:
 
     # Qt — 必须在创建 QApplication 之前设 HiDPI
     QApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        Qt.HighDpiScaleFactorRoundingPolicy.Round
     )
     app = QApplication(sys.argv)
     app.setApplicationName("烂摊子控制台")
@@ -66,6 +67,25 @@ def main() -> int:
     window = MainWindow()
     window.show()
 
+    # —— Ctrl+C 处理 ——
+    # Qt 的 app.exec() 会阻塞解释器，Python 收不到 SIGINT。
+    # 装一个 100ms 的空转 QTimer 让解释器定期苏醒处理信号；
+    # 然后用自定义 handler 强制退出 Qt 主循环。
+    def _sigint(*_):
+        logger.info("收到 Ctrl+C，正在退出…")
+        window._force_quit = True
+        try:
+            window.tray.hide()
+        except Exception:
+            pass
+        QApplication.instance().quit()
+
+    signal.signal(signal.SIGINT, _sigint)
+    signal.signal(signal.SIGTERM, _sigint)
+    _wake = QTimer()
+    _wake.start(100)
+    _wake.timeout.connect(lambda: None)
+
     exit_code = app.exec()
 
     logger.info("Shutting down…")
@@ -74,7 +94,18 @@ def main() -> int:
         scheduler.shutdown(wait=False)
     except Exception:
         logger.exception("scheduler shutdown failed")
-    api_server.stop()
+    try:
+        api_server.stop()
+    except Exception:
+        logger.exception("api_server stop failed")
+
+    # 兜底 — 1.5 秒后如果还活着就强退，避免一直挂
+    import os, threading
+    def _hard_exit():
+        os._exit(exit_code)
+    t = threading.Timer(1.5, _hard_exit)
+    t.daemon = True
+    t.start()
     return exit_code
 
 

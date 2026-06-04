@@ -20,13 +20,16 @@ from sqlalchemy.orm import Session
 
 from .config import get_config
 from .database import (
+    ActivityBlockRecord,
     AppRecordMobile,
     AppRecordWindows,
     DailySummary,
     LocationRecord,
+    ScreenEventMobile,
     SessionLocal,
     get_session,
 )
+from .labeler import label_blocks_for_date, record_correction
 from .monitor import WindowMonitor
 from .scheduler import generate_summary
 
@@ -54,6 +57,62 @@ class MobileLocationIn(BaseModel):
     longitude: float
     address: Optional[str] = None
     timestamp: datetime
+
+
+class MobileScreenEventIn(BaseModel):
+    event_type: str  # 亮屏 / 息屏 / 解锁
+    timestamp: int  # unix epoch seconds
+
+
+# ----- 活动块上传 / 拉标签 -----
+
+class ActivityBlockIn(BaseModel):
+    phone_block_id: int = 0
+    start_time: datetime       # 手机端 ms 时间戳的 ISO 形式
+    end_time: datetime
+    category: str
+    dominant_app_package: str
+    dominant_app_name: str
+    total_app_time_ms: int = 0
+    duration_ms: int = 0
+    interruption_count: int = 0
+    location_address: Optional[str] = None
+
+
+class BlocksUploadIn(BaseModel):
+    date: str  # YYYY-MM-DD
+    blocks: list[ActivityBlockIn] = Field(default_factory=list)
+
+
+class ActivityBlockOut(BaseModel):
+    phone_block_id: int
+    start_time: datetime
+    end_time: datetime
+    category: str
+    activity_label: Optional[str] = None
+    sub_label: Optional[str] = None
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
+    ask_user: Optional[str] = None
+    manually_corrected: bool = False
+
+
+class BlocksFetchOut(BaseModel):
+    date: str
+    blocks: list[ActivityBlockOut]
+
+
+class LabelRunIn(BaseModel):
+    date: Optional[str] = None  # default today
+    force: bool = False
+
+
+class CorrectionIn(BaseModel):
+    """用户在手机端修正后回传给服务端。"""
+    # 服务端 block id（手机要先 GET 拉过来知道）
+    server_block_id: int
+    user_label: str
+    user_category: str
 
 
 class TimelineEntry(BaseModel):
@@ -262,6 +321,121 @@ def post_mobile_location(record: MobileLocationIn, db: Session = Depends(get_ses
     db.commit()
     db.refresh(row)
     return {"id": row.id}
+
+
+@app.post("/mobile/screen-event", status_code=201)
+def post_mobile_screen_event(event: MobileScreenEventIn, db: Session = Depends(get_session)):
+    valid = {"亮屏", "息屏", "解锁"}
+    if event.event_type not in valid:
+        raise HTTPException(status_code=400, detail=f"event_type 必须是 {valid} 之一")
+    row = ScreenEventMobile(event_type=event.event_type, timestamp=event.timestamp)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id}
+
+
+@app.post("/mobile/blocks", status_code=201)
+def post_mobile_blocks(payload: BlocksUploadIn, db: Session = Depends(get_session)):
+    """手机端批量上传 ActivityBlock。按 (start_time, dominant_app_package) upsert，
+    已经被 LLM 标过或用户改过的块不覆盖标签。
+    """
+    upserted = 0
+    inserted = 0
+    for b in payload.blocks:
+        existing = (
+            db.query(ActivityBlockRecord)
+            .filter(
+                ActivityBlockRecord.start_time == b.start_time,
+                ActivityBlockRecord.dominant_app_package == b.dominant_app_package,
+            )
+            .one_or_none()
+        )
+        if existing:
+            existing.phone_block_id = b.phone_block_id
+            existing.end_time = b.end_time
+            existing.duration_ms = b.duration_ms
+            existing.total_app_time_ms = b.total_app_time_ms
+            existing.interruption_count = b.interruption_count
+            existing.location_address = b.location_address
+            existing.dominant_app_name = b.dominant_app_name
+            # 不动 LLM 字段；只有当之前没标签时才同步 category
+            if existing.activity_label is None and not existing.manually_corrected:
+                existing.category = b.category
+            existing.updated_at = datetime.utcnow()
+            upserted += 1
+        else:
+            row = ActivityBlockRecord(
+                phone_block_id=b.phone_block_id,
+                start_time=b.start_time,
+                end_time=b.end_time,
+                category=b.category,
+                dominant_app_package=b.dominant_app_package,
+                dominant_app_name=b.dominant_app_name,
+                total_app_time_ms=b.total_app_time_ms,
+                duration_ms=b.duration_ms,
+                interruption_count=b.interruption_count,
+                location_address=b.location_address,
+            )
+            db.add(row)
+            inserted += 1
+    db.commit()
+    return {"date": payload.date, "inserted": inserted, "upserted": upserted}
+
+
+@app.get("/mobile/blocks/{date_str}", response_model=BlocksFetchOut)
+def get_mobile_blocks(date_str: str, db: Session = Depends(get_session)):
+    """手机端拉取某一天的块（含已写好的 LLM 标签）。"""
+    target = _parse_date(date_str)
+    day_start = datetime.combine(target, datetime.min.time())
+    day_end = day_start + timedelta(days=1)
+    rows = (
+        db.query(ActivityBlockRecord)
+        .filter(
+            ActivityBlockRecord.start_time >= day_start,
+            ActivityBlockRecord.start_time < day_end,
+        )
+        .order_by(ActivityBlockRecord.start_time.asc())
+        .all()
+    )
+    return BlocksFetchOut(
+        date=date_str,
+        blocks=[
+            ActivityBlockOut(
+                phone_block_id=r.phone_block_id,
+                start_time=r.start_time,
+                end_time=r.end_time,
+                category=r.category,
+                activity_label=r.activity_label,
+                sub_label=r.sub_label,
+                confidence=r.confidence,
+                reasoning=r.reasoning,
+                ask_user=r.ask_user,
+                manually_corrected=r.manually_corrected,
+            )
+            for r in rows
+        ],
+    )
+
+
+@app.post("/labeler/run")
+def run_labeler(payload: LabelRunIn):
+    """手动触发：对某一天的未标签块跑一次 Ollama。"""
+    target = _parse_date(payload.date) if payload.date else date.today()
+    result = label_blocks_for_date(target, force=payload.force)
+    return result
+
+
+@app.post("/labeler/correction")
+def post_correction(payload: CorrectionIn):
+    ok = record_correction(
+        block_id=payload.server_block_id,
+        user_label=payload.user_label,
+        user_category=payload.user_category,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="block not found")
+    return {"ok": True}
 
 
 @app.get("/timeline/today", response_model=TimelineOut)

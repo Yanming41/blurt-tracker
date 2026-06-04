@@ -175,6 +175,7 @@ fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
     val selectedDay by vm.selectedDay.collectAsState()
     val isToday by vm.isToday.collectAsState()
     val historyBackfill by vm.historyBackfill.collectAsState()
+    val syncState by vm.syncState.collectAsState()
 
     LaunchedEffect(Unit) { vm.refresh() }
 
@@ -192,6 +193,9 @@ fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
             onBackfill = { vm.backfillPastDays(7) },
             historyBackfill = historyBackfill,
             onDismissBackfill = vm::dismissHistoryBackfill,
+            onSync = vm::syncWithDesktop,
+            syncState = syncState,
+            onDismissSync = vm::dismissSync,
         )
         StatsRow(summary)
         HorizontalDivider()
@@ -230,6 +234,9 @@ private fun DateHeader(
     onBackfill: () -> Unit,
     historyBackfill: TimelineViewModel.HistoryBackfillState,
     onDismissBackfill: () -> Unit,
+    onSync: () -> Unit,
+    syncState: TimelineViewModel.SyncState,
+    onDismissSync: () -> Unit,
 ) {
     val dateFmt = remember { SimpleDateFormat("yyyy-MM-dd EEE", Locale.getDefault()) }
     Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
@@ -246,6 +253,45 @@ private fun DateHeader(
             }
             if (!isToday) {
                 TextButton(onClick = onToday) { Text("今天") }
+            }
+        }
+        // 同步/回灌操作行
+        Row(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            val syncBusy = syncState is TimelineViewModel.SyncState.Running
+            OutlinedButton(
+                onClick = onSync,
+                enabled = !syncBusy,
+            ) { Text(if (syncBusy) "同步中…" else "🤖 让电脑贴标签") }
+        }
+        // 同步反馈
+        when (val s = syncState) {
+            TimelineViewModel.SyncState.Idle -> Unit
+            is TimelineViewModel.SyncState.Running -> {
+                Text(s.step,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.Gray,
+                    modifier = Modifier.padding(horizontal = 4.dp))
+            }
+            is TimelineViewModel.SyncState.Finished -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("✅ ${s.msg}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color(0xFF2E7D32),
+                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp))
+                    TextButton(onClick = onDismissSync) { Text("好") }
+                }
+            }
+            is TimelineViewModel.SyncState.Failed -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("❌ ${s.reason}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color(0xFFC62828),
+                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp))
+                    TextButton(onClick = onDismissSync) { Text("知道了") }
+                }
             }
         }
         // 历史回灌状态/按钮

@@ -13,6 +13,8 @@ from .database import (
     AppRecordWindows,
     DailySummary,
     LocationRecord,
+    MoodRecord,
+    ScreenEventMobile,
     SessionLocal,
 )
 from .config import get_config
@@ -32,9 +34,11 @@ OLLAMA_URL = _ollama_generate_url()
 
 
 def _gather_day_data(target: date) -> tuple[str, int]:
-    """Pull all records for `target`, return (prompt_text, total_screen_seconds)."""
+    """Pull all records for `target`, return (prompt_body, total_screen_seconds)."""
     start = datetime.combine(target, datetime.min.time())
     end = start + timedelta(days=1)
+    start_ts = int(start.timestamp())
+    end_ts = int(end.timestamp())
 
     with SessionLocal() as db:
         windows = (
@@ -55,30 +59,61 @@ def _gather_day_data(target: date) -> tuple[str, int]:
             .order_by(LocationRecord.timestamp)
             .all()
         )
+        screen_events = (
+            db.query(ScreenEventMobile)
+            .filter(ScreenEventMobile.timestamp >= start_ts, ScreenEventMobile.timestamp < end_ts)
+            .order_by(ScreenEventMobile.timestamp)
+            .all()
+        )
+        moods = (
+            db.query(MoodRecord)
+            .filter(MoodRecord.timestamp >= start, MoodRecord.timestamp < end)
+            .order_by(MoodRecord.timestamp)
+            .all()
+        )
 
-    total_screen = 0
+    total_screen = sum(int((w.end_time - w.start_time).total_seconds()) for w in windows) \
+                 + sum(int((m.end_time - m.start_time).total_seconds()) for m in mobiles)
+
+    screen_on_count = sum(1 for e in screen_events if e.event_type == "亮屏")
+    total_hours = round(total_screen / 3600, 1)
+
     lines: list[str] = []
-    lines.append(f"# 今日数据 ({target.isoformat()})")
-    lines.append("\n## 电脑窗口活动")
-    for w in windows:
-        dur = int((w.end_time - w.start_time).total_seconds())
-        total_screen += dur
-        lines.append(
-            f"- [{w.start_time:%H:%M}-{w.end_time:%H:%M}] {w.app_name} | {w.window_title[:80]}"
-        )
+    lines.append(f"今天是 {target.isoformat()}，以下是用户的完整活动记录：")
 
-    lines.append("\n## 手机App使用")
-    for m in mobiles:
-        dur = int((m.end_time - m.start_time).total_seconds())
-        total_screen += dur
-        lines.append(
-            f"- [{m.start_time:%H:%M}-{m.end_time:%H:%M}] {m.app_name} ({m.package_name})"
-        )
+    lines.append("\n手机使用：")
+    if mobiles:
+        for m in mobiles:
+            dur_min = int((m.end_time - m.start_time).total_seconds() // 60)
+            lines.append(f"- {m.start_time:%H:%M}-{m.end_time:%H:%M} {m.app_name} ({dur_min}分钟)")
+    else:
+        lines.append("- （无）")
 
-    lines.append("\n## 位置轨迹")
-    for loc in locations:
-        addr = loc.address or f"({loc.latitude:.4f}, {loc.longitude:.4f})"
-        lines.append(f"- {loc.timestamp:%H:%M} {addr}")
+    lines.append("\n电脑使用：")
+    if windows:
+        for w in windows:
+            dur_min = int((w.end_time - w.start_time).total_seconds() // 60)
+            lines.append(f"- {w.start_time:%H:%M}-{w.end_time:%H:%M} {w.app_name} | {w.window_title[:60]} ({dur_min}分钟)")
+    else:
+        lines.append("- （无）")
+
+    lines.append("\n位置轨迹：")
+    if locations:
+        for loc in locations:
+            addr = loc.address or f"({loc.latitude:.4f}, {loc.longitude:.4f})"
+            lines.append(f"- {loc.timestamp:%H:%M} {addr}")
+    else:
+        lines.append("- （无）")
+
+    lines.append("\n屏幕状态：")
+    lines.append(f"亮屏 {screen_on_count} 次，总屏幕时间 {total_hours} 小时")
+
+    lines.append("\n情绪记录：")
+    if moods:
+        for mood in moods:
+            lines.append(f"- {mood.timestamp:%H:%M} {mood.content}")
+    else:
+        lines.append("- （无）")
 
     return "\n".join(lines), total_screen
 
@@ -98,9 +133,9 @@ def generate_summary(target: date | None = None) -> DailySummary:
     data_text, total_screen = _gather_day_data(target)
 
     prompt = (
-        "你是一个日常追踪助手。下面是用户一天的电脑、手机和位置数据，"
-        "请用中文写一段150字左右的总结，包含主要活动、时间分配观察、"
-        "以及一个温和的建议。\n\n" + data_text
+        data_text
+        + "\n\n请用轻松的语气总结今天这个人干了什么，"
+        "不超过150字，不要说教，像朋友聊天一样。"
     )
 
     try:

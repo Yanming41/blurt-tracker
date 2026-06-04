@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from qfluentwidgets import (
     FluentIcon as FIF,
@@ -12,8 +12,11 @@ from qfluentwidgets import (
     NavigationItemPosition,
 )
 
+from core.config import get_config
+
 from .city import CityInterface
 from .dashboard import DashboardInterface
+from .icons import emoji_icon, file_icon
 from .location import LocationInterface
 from .setting import SettingInterface
 from .status_panel import StatusPanel
@@ -36,15 +39,10 @@ class MainWindow(FluentWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("烂摊子控制台")
-        self.setMinimumSize(1200, 800)
-        self.resize(1400, 900)
+        self._apply_initial_size()
 
-        # 启用 Windows 11 Mica
-        try:
-            self.setMicaEffectEnabled(True)
-        except Exception:
-            # 老版本 qfluentwidgets 或非 Win11 — 忽略
-            pass
+        # 根据配置决定 Mica 毛玻璃 — 默认关，可在设置页打开
+        self.set_mica(bool(get_config().get("mica_enabled", False)))
 
         # 创建各页面
         self.dashboard = DashboardInterface(self)
@@ -53,15 +51,17 @@ class MainWindow(FluentWindow):
         self.city = CityInterface(self)
         self.setting = SettingInterface(self)
 
-        # 主导航
-        self.addSubInterface(self.dashboard, FIF.HOME, "今日概览")
-        self.addSubInterface(self.timeline, FIF.CALENDAR, "时间线")
-        self.addSubInterface(self.location, FIF.PIN, "位置记录")
-        self.addSubInterface(self.city, FIF.GLOBE, "我的城市")
+        # 主导航 — 默认用 emoji 图标（彩色）；
+        # 想换成自定义 PNG，把 emoji_icon("📊") 换成 file_icon("dashboard.png")
+        # 并把图标文件放到 desktop/assets/icons/ 即可
+        self.addSubInterface(self.dashboard, emoji_icon("📊"), "今日概览")
+        self.addSubInterface(self.timeline, emoji_icon("📅"), "今日时间轴")
+        self.addSubInterface(self.location, emoji_icon("📍"), "位置记录")
+        self.addSubInterface(self.city, emoji_icon("🏙️"), "我的城市")
 
         # 设置放底部
         self.addSubInterface(
-            self.setting, FIF.SETTING, "设置",
+            self.setting, emoji_icon("⚙️"), "设置",
             position=NavigationItemPosition.BOTTOM,
         )
 
@@ -84,6 +84,16 @@ class MainWindow(FluentWindow):
         self._force_quit = False
         self._init_tray()
         self._center_on_screen()
+
+    # ---------- Mica 切换 ----------
+
+    def set_mica(self, enabled: bool) -> None:
+        """切换 Windows 11 毛玻璃效果。"""
+        try:
+            self.setMicaEffectEnabled(bool(enabled))
+        except Exception:
+            # 老版本 qfluentwidgets 或非 Win11 — 忽略
+            pass
 
     # ---------- 托盘 ----------
 
@@ -123,8 +133,26 @@ class MainWindow(FluentWindow):
 
     # ---------- 窗口行为 ----------
 
+    def _apply_initial_size(self) -> None:
+        """根据屏幕可用区域和缩放倍率自适应初始窗口大小。"""
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.setMinimumSize(900, 650)
+            self.resize(1100, 750)
+            return
+        # availableGeometry 已经是逻辑像素，会自动除以 DPR
+        avail = screen.availableGeometry()
+        # 理想大小取屏幕的 85%，并 cap 在 1400×900
+        w = min(1400, int(avail.width() * 0.85))
+        h = min(900, int(avail.height() * 0.85))
+        # 最小尺寸不能比窗口大
+        min_w = min(900, w)
+        min_h = min(650, h)
+        self.setMinimumSize(min_w, min_h)
+        self.resize(w, h)
+
     def _center_on_screen(self) -> None:
-        screen = self.screen()
+        screen = QGuiApplication.primaryScreen()
         if screen is None:
             return
         geom = screen.availableGeometry()

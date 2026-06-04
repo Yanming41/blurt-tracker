@@ -1,12 +1,10 @@
 """今日概览页 — Fluent 风格统计卡 + 时间线 + AI 总结。"""
 from __future__ import annotations
 
-import time
 from datetime import date, datetime, timedelta
 from itertools import groupby
 from typing import Optional
 
-import requests
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
@@ -39,10 +37,12 @@ from core.database import (
 )
 from core.scheduler import generate_summary
 
+from . import notify
+from .async_check import PingChecker
 from .common import format_duration, source_icon
 
 
-REFRESH_MS = 30_000
+REFRESH_MS = 60_000
 
 
 class _SummaryWorker(QThread):
@@ -168,10 +168,20 @@ class DashboardInterface(QWidget):
         sc_lay.addWidget(self.summary_lbl)
         outer.addWidget(self.summary_card)
 
+        # 异步 ping 检查器（手机卡片用）
+        self._pinger = PingChecker(self)
+        self._pinger.result.connect(self._on_phone_result)
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._timer.start(REFRESH_MS)
         self.refresh()
+
+    def _on_phone_result(self, online: bool, ms: int) -> None:
+        if online:
+            self.card_phone.set_value("✅ 在线", f"{ms}ms")
+        else:
+            self.card_phone.set_value("● 离线", "未连接到手机")
 
     # ---------- 加载 ----------
 
@@ -179,13 +189,7 @@ class DashboardInterface(QWidget):
         try:
             self._refresh_inner()
         except Exception as e:
-            InfoBar.error(
-                title="刷新失败",
-                content=str(e),
-                duration=3000,
-                position=InfoBarPosition.TOP,
-                parent=self,
-            )
+            notify.error(self, "刷新失败", str(e), duration=5000)
 
     def _refresh_inner(self) -> None:
         today = date.today()
@@ -211,20 +215,14 @@ class DashboardInterface(QWidget):
         self.card_loc.set_value(str(len(locs)), "条记录")
         self.card_task.set_value("0/0", "暂未实现")
 
-        # 手机卡：用 status 接口探测
+        # 手机卡：发起异步 ping，不阻塞 UI
         cfg = get_config()
         ip = cfg.get("phone_ip", "").strip()
         if not ip:
             self.card_phone.set_value("未配置", "请到设置页填写IP")
         else:
-            try:
-                t0 = time.perf_counter()
-                r = requests.get(f"http://{ip}:{cfg.get('phone_port', 8000)}/ping", timeout=3)
-                r.raise_for_status()
-                dt = int((time.perf_counter() - t0) * 1000)
-                self.card_phone.set_value("✅ 在线", f"{dt}ms")
-            except requests.RequestException:
-                self.card_phone.set_value("● 离线", "未连接到手机")
+            self.card_phone.set_value("检测中…", ip)
+            self._pinger.check(f"http://{ip}:{cfg.get('phone_port', 8000)}/ping", timeout=3)
 
         # 时间线
         entries = []
@@ -292,5 +290,4 @@ class DashboardInterface(QWidget):
     def _on_failed(self, err: str) -> None:
         self.gen_btn.setEnabled(True)
         self.gen_btn.setText("立即生成")
-        InfoBar.error("生成失败", err, duration=4000,
-                      position=InfoBarPosition.TOP, parent=self)
+        notify.error(self, "生成失败", err, duration=6000)

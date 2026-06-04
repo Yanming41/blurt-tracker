@@ -27,8 +27,11 @@ from qfluentwidgets import (
     SpinBox,
     StrongBodyLabel,
     SubtitleLabel,
+    SwitchButton,
     TitleLabel,
 )
+
+from . import notify
 
 from core.api import get_lan_ip, get_tailscale_ip, monitor
 from core.config import get_config, update_config
@@ -150,6 +153,38 @@ class SettingInterface(ScrollArea):
         data_card.viewLayout.addLayout(data_layout)
         outer.addWidget(data_card)
 
+        # ----- 外观 -----
+        appearance_card = HeaderCardWidget()
+        appearance_card.setTitle("🎨 外观")
+        appearance_layout = QVBoxLayout()
+        appearance_layout.setContentsMargins(0, 0, 0, 0)
+        appearance_layout.setSpacing(2)
+
+        self.mica_switch = SwitchButton()
+        self.mica_switch.setChecked(bool(cfg.get("mica_enabled", False)))
+        self.mica_switch.setOnText("已开启")
+        self.mica_switch.setOffText("已关闭")
+        self.mica_switch.checkedChanged.connect(self._on_mica_toggled)
+
+        mica_row = QWidget()
+        mr_lay = QHBoxLayout(mica_row)
+        mr_lay.setContentsMargins(16, 10, 16, 10)
+        mr_lay.setSpacing(12)
+        mica_title = BodyLabel("Windows 11 毛玻璃（Mica）")
+        mica_title.setFixedWidth(220)
+        mica_hint = CaptionLabel("关闭后界面更流畅，开启更好看但可能降低帧率")
+        mica_hint.setStyleSheet("color: #888;")
+        text_col = QVBoxLayout(); text_col.setContentsMargins(0, 0, 0, 0); text_col.setSpacing(0)
+        text_col.addWidget(mica_title)
+        text_col.addWidget(mica_hint)
+        text_wrap = QWidget(); text_wrap.setLayout(text_col)
+        mr_lay.addWidget(text_wrap, 1)
+        mr_lay.addWidget(self.mica_switch)
+        appearance_layout.addWidget(mica_row)
+
+        appearance_card.viewLayout.addLayout(appearance_layout)
+        outer.addWidget(appearance_card)
+
         # ----- 系统信息 -----
         info_card = HeaderCardWidget()
         info_card.setTitle("ℹ️ 系统信息")
@@ -171,6 +206,20 @@ class SettingInterface(ScrollArea):
         self._refresh_status()
 
     # ---------- helpers ----------
+
+    def _on_mica_toggled(self, checked: bool) -> None:
+        update_config(mica_enabled=bool(checked))
+        # 拿到主窗口实例并切换 — window() 返回顶层 FluentWindow
+        top = self.window()
+        if hasattr(top, "set_mica"):
+            top.set_mica(bool(checked))
+        InfoBar.success(
+            "已切换",
+            "Mica 已" + ("开启" if checked else "关闭"),
+            duration=1800,
+            position=InfoBarPosition.TOP,
+            parent=self,
+        )
 
     def _refresh_status(self) -> None:
         running = monitor.is_running()
@@ -208,8 +257,7 @@ class SettingInterface(ScrollArea):
         except requests.RequestException as e:
             tip = "❌ 连接失败 — 请检查：手机程序在运行、两端Tailscale开启、IP填写正确"
             self.test_status_lbl.setText(tip)
-            InfoBar.error("连接失败", str(e), duration=4000,
-                          position=InfoBarPosition.TOP, parent=self)
+            notify.error(self, "连接失败", str(e), duration=6000)
 
     def _clear_today(self) -> None:
         today = date.today()
@@ -230,8 +278,7 @@ class SettingInterface(ScrollArea):
             InfoBar.success("已清除", "今日数据已删除", duration=2500,
                             position=InfoBarPosition.TOP, parent=self)
         except Exception as e:
-            InfoBar.error("清除失败", str(e), duration=4000,
-                          position=InfoBarPosition.TOP, parent=self)
+            notify.error(self, "清除失败", str(e), duration=6000)
 
     def _generate_summary(self) -> None:
         InfoBar.info("生成中", "正在调用 Ollama，请稍候…",
@@ -241,9 +288,8 @@ class SettingInterface(ScrollArea):
             "已生成", "今日总结已更新", duration=2500,
             position=InfoBarPosition.TOP, parent=self
         ))
-        worker.failed.connect(lambda err: InfoBar.error(
-            "生成失败", err, duration=4000,
-            position=InfoBarPosition.TOP, parent=self
+        worker.failed.connect(lambda err: notify.error(
+            self, "生成失败", err, duration=6000,
         ))
         worker.finished.connect(worker.deleteLater)
         self._worker = worker

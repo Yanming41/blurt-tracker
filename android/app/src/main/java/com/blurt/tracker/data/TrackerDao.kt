@@ -107,6 +107,27 @@ interface TrackerDao {
     @Query("DELETE FROM activity_blocks WHERE startTime >= :since")
     suspend fun deleteAllBlocksSince(since: Long)
 
+    @Query("""
+        UPDATE activity_blocks SET
+            activityLabel = :label,
+            confidence = :conf,
+            reasoning = :reasoning,
+            askUser = :askUser,
+            category = :category
+        WHERE id = :id AND manuallyCorrected = 0
+    """)
+    suspend fun updateBlockLabel(
+        id: Long,
+        label: String?,
+        category: String,
+        conf: Float?,
+        reasoning: String?,
+        askUser: String?,
+    )
+
+    @Query("SELECT * FROM activity_blocks WHERE startTime = :startTime LIMIT 1")
+    suspend fun getBlockByStart(startTime: Long): ActivityBlock?
+
     // ---------- Glance ----------
     @Insert
     suspend fun insertGlance(g: Glance): Long

@@ -21,6 +21,10 @@ except ImportError:  # non-Windows dev environments
     win32process = None
 
 from .database import AppRecordWindows, SessionLocal
+from .idle import get_idle_seconds
+
+# 闲置超过这个秒数就停止把当前窗口算作"在用"
+IDLE_THRESHOLD_SECONDS = 300  # 5 分钟
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +89,19 @@ class WindowMonitor:
 
         while not self._stop.is_set():
             now = datetime.utcnow()
+
+            # 闲置太久 → 封掉当前段，并暂停采样直到用户回来
+            idle = get_idle_seconds()
+            if idle >= IDLE_THRESHOLD_SECONDS:
+                if current_app is not None and segment_start and last_seen:
+                    self._persist(current_app, current_title or "", segment_start, last_seen)
+                    current_app = None
+                    current_title = None
+                    segment_start = None
+                    last_seen = None
+                self._stop.wait(self.interval)
+                continue
+
             sample = _get_active_window()
             if sample is None:
                 self._stop.wait(self.interval)
