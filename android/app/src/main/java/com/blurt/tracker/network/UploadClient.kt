@@ -131,6 +131,22 @@ object UploadClient {
             }
         }
 
+    /** 推送一条用户修正给电脑，用 (start_time, dominant_app_package) 自然键 */
+    suspend fun postCorrection(
+        baseUrl: String,
+        startTimeMs: Long,
+        dominantAppPackage: String,
+        userLabel: String,
+        userCategory: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val fmt = isoFmt
+        val body = """{"start_time":"${fmt.format(Date(startTimeMs))}",""" +
+            """"dominant_app_package":"${dominantAppPackage.escape()}",""" +
+            """"user_label":"${userLabel.escape()}",""" +
+            """"user_category":"${userCategory.escape()}"}"""
+        postJson("$baseUrl/labeler/correction", body)
+    }
+
     /** 触发电脑端跑 LLM 标签 */
     suspend fun triggerLabeler(baseUrl: String, dateStr: String? = null, force: Boolean = false): Boolean =
         withContext(Dispatchers.IO) {

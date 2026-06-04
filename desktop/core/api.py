@@ -108,9 +108,10 @@ class LabelRunIn(BaseModel):
 
 
 class CorrectionIn(BaseModel):
-    """用户在手机端修正后回传给服务端。"""
-    # 服务端 block id（手机要先 GET 拉过来知道）
-    server_block_id: int
+    """用户在手机端修正后回传给服务端。用 (start_time, dominant_app_package)
+    作自然键查找服务端的对应块。"""
+    start_time: datetime
+    dominant_app_package: str
     user_label: str
     user_category: str
 
@@ -427,15 +428,25 @@ def run_labeler(payload: LabelRunIn):
 
 
 @app.post("/labeler/correction")
-def post_correction(payload: CorrectionIn):
+def post_correction(payload: CorrectionIn, db: Session = Depends(get_session)):
+    blk = (
+        db.query(ActivityBlockRecord)
+        .filter(
+            ActivityBlockRecord.start_time == payload.start_time,
+            ActivityBlockRecord.dominant_app_package == payload.dominant_app_package,
+        )
+        .one_or_none()
+    )
+    if blk is None:
+        raise HTTPException(status_code=404, detail="block not found")
     ok = record_correction(
-        block_id=payload.server_block_id,
+        block_id=blk.id,
         user_label=payload.user_label,
         user_category=payload.user_category,
     )
     if not ok:
         raise HTTPException(status_code=404, detail="block not found")
-    return {"ok": True}
+    return {"ok": True, "server_block_id": blk.id}
 
 
 @app.get("/timeline/today", response_model=TimelineOut)

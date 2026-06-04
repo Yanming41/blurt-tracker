@@ -4,7 +4,10 @@ import android.graphics.drawable.Drawable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -23,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
@@ -50,6 +54,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -187,6 +192,7 @@ fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
 
     var sheetSegment by remember { mutableStateOf<AppSegment?>(null) }
     var sheetLocation by remember { mutableStateOf<LocationRecord?>(null) }
+    var sheetBlock by remember { mutableStateOf<ActivityBlock?>(null) }
     val sheetState = rememberModalBottomSheetState()
 
     Column(Modifier.fillMaxSize()) {
@@ -213,6 +219,7 @@ fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
             screens = screens,
             onSegmentClick = { sheetSegment = it },
             onLocationClick = { sheetLocation = it },
+            onBlockLongPress = { sheetBlock = it },
         )
     }
 
@@ -224,6 +231,17 @@ fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
     sheetLocation?.let { loc ->
         ModalBottomSheet(onDismissRequest = { sheetLocation = null }, sheetState = sheetState) {
             LocationDetail(loc)
+        }
+    }
+    sheetBlock?.let { blk ->
+        ModalBottomSheet(onDismissRequest = { sheetBlock = null }, sheetState = sheetState) {
+            BlockDetail(
+                block = blk,
+                onCorrect = { newLabel, newCategory ->
+                    vm.correctBlock(blk.id, newLabel, newCategory)
+                    sheetBlock = null
+                },
+            )
         }
     }
 }
@@ -371,6 +389,7 @@ private fun TimelineCanvas(
     screens: List<ScreenEvent>,
     onSegmentClick: (AppSegment) -> Unit,
     onLocationClick: (LocationRecord) -> Unit,
+    onBlockLongPress: (ActivityBlock) -> Unit,
 ) {
     // 跟踪用户点开了哪些块（展开则显示内部碎片）
     val expandedBlocks = remember { mutableStateOf<Set<Long>>(emptySet()) }
@@ -450,6 +469,7 @@ private fun TimelineCanvas(
                     width = plotWidth,
                     expanded = blk.id in expandedIds,
                     onClick = { toggleExpand(blk.id) },
+                    onLongPress = { onBlockLongPress(blk) },
                 )
             }
 
@@ -616,6 +636,7 @@ private fun ActivityBlockCard(
     width: androidx.compose.ui.unit.Dp,
     expanded: Boolean,
     onClick: () -> Unit,
+    onLongPress: () -> Unit,
 ) {
     val ctx = LocalContext.current
     val yDp = msToDpValue(block.startTime - zeroMs, hourHeightDp).dp.coerceAtLeast(0.dp)
@@ -649,7 +670,12 @@ private fun ActivityBlockCard(
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(10.dp.toPx()),
                 )
             }
-            .clickable { onClick() }
+            .pointerInput(block.id) {
+                androidx.compose.foundation.gestures.detectTapGestures(
+                    onTap = { onClick() },
+                    onLongPress = { onLongPress() },
+                )
+            }
             .padding(horizontal = 8.dp, vertical = 6.dp),
         contentAlignment = Alignment.TopStart,
     ) {
@@ -845,6 +871,153 @@ private fun SegmentDetail(seg: AppSegment, locations: List<LocationRecord>) {
             Text("在这段时间你在：${matching.address}",
                 style = MaterialTheme.typography.bodyMedium)
         }
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BlockDetail(
+    block: ActivityBlock,
+    onCorrect: (label: String, category: String) -> Unit,
+) {
+    val ctx = LocalContext.current
+    val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val displayName = remember(block.dominantAppPackage) {
+        AppDisplayName.resolve(ctx, block.dominantAppPackage)
+    }
+    val iconBitmap = remember(block.dominantAppPackage) {
+        UsageStatsHelper.getAppIcon(ctx, block.dominantAppPackage)?.toSafeBitmap()
+    }
+
+    var editing by remember { mutableStateOf(false) }
+    var inputLabel by remember(block.id) {
+        mutableStateOf(block.activityLabel ?: categoryDisplay(block.category))
+    }
+    var pickedCategory by remember(block.id) { mutableStateOf(block.category) }
+
+    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+        // ---- 头部：App 图标 + 标签 ----
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (iconBitmap != null) {
+                Image(
+                    bitmap = iconBitmap,
+                    contentDescription = null,
+                    modifier = Modifier.width(36.dp).height(36.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = block.activityLabel ?: "（未标签）",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "${categoryEmoji(block.category)} ${categoryDisplay(block.category)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = categoryPalette(block.category).border,
+                )
+            }
+            if (block.manuallyCorrected) {
+                Text("✅ 已确认",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF2E7D32))
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+
+        // ---- 时间 + 持续 ----
+        Text(
+            "${timeFmt.format(Date(block.startTime))}–${timeFmt.format(Date(block.endTime))}  ·  ${formatHM(block.durationMs)}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        if (block.locationAddress != null) {
+            Text("📍 ${block.locationAddress}",
+                style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        }
+        Text("主导：$displayName · 打扰 ${block.interruptionCount} 次",
+            style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+
+        // ---- LLM 信息 ----
+        if (!block.reasoning.isNullOrBlank() || !block.askUser.isNullOrBlank() ||
+            block.confidence != null
+        ) {
+            Spacer(Modifier.height(10.dp))
+            block.confidence?.let { c ->
+                Text("置信度 ${"%.0f".format(c * 100)}%",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (c >= 0.7) Color(0xFF2E7D32) else Color(0xFFB26A00))
+            }
+            block.reasoning?.takeIf { it.isNotBlank() }?.let { r ->
+                Text("💭 $r", style = MaterialTheme.typography.bodySmall,
+                    color = Color.DarkGray, modifier = Modifier.padding(top = 4.dp))
+            }
+            block.askUser?.takeIf { it.isNotBlank() }?.let { q ->
+                Spacer(Modifier.height(8.dp))
+                Text("🤔 ${q}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFFB26A00))
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ---- 修正 UI ----
+        if (!editing) {
+            OutlinedButton(onClick = { editing = true }) {
+                Text(if (block.manuallyCorrected) "✏️ 重新修正" else "✏️ 修正标签")
+            }
+        } else {
+            Text("选择类别", style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.height(6.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                AppCategory.ALL.forEach { cat ->
+                    val selected = (cat == pickedCategory)
+                    val p = categoryPalette(cat)
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (selected) p.fill else Color.Transparent,
+                                RoundedCornerShape(50),
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = p.border,
+                                shape = RoundedCornerShape(50),
+                            )
+                            .clickable { pickedCategory = cat }
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            "${categoryEmoji(cat)} ${categoryDisplay(cat)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = p.border,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Text("活动名（可改）", style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.height(4.dp))
+            androidx.compose.material3.OutlinedTextField(
+                value = inputLabel,
+                onValueChange = { inputLabel = it.take(20) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                placeholder = { Text("如：写代码 / 看视频") },
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { onCorrect(inputLabel.trim().ifBlank { categoryDisplay(pickedCategory) }, pickedCategory) },
+                    enabled = inputLabel.isNotBlank(),
+                ) { Text("保存") }
+                TextButton(onClick = { editing = false }) { Text("取消") }
+            }
+        }
+
         Spacer(Modifier.height(20.dp))
     }
 }

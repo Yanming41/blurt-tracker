@@ -128,6 +128,17 @@ interface TrackerDao {
     @Query("SELECT * FROM activity_blocks WHERE startTime = :startTime LIMIT 1")
     suspend fun getBlockByStart(startTime: Long): ActivityBlock?
 
+    @Query("""
+        UPDATE activity_blocks SET
+            activityLabel = :label,
+            category = :category,
+            confidence = 1.0,
+            askUser = NULL,
+            manuallyCorrected = 1
+        WHERE id = :id
+    """)
+    suspend fun applyCorrection(id: Long, label: String, category: String)
+
     // ---------- Glance ----------
     @Insert
     suspend fun insertGlance(g: Glance): Long

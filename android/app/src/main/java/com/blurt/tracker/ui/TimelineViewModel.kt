@@ -10,6 +10,7 @@ import com.blurt.tracker.data.MoodEntry
 import com.blurt.tracker.data.ScreenEvent
 import com.blurt.tracker.data.TrackerDatabase
 import com.blurt.tracker.network.UploadClient
+import com.blurt.tracker.service.AskUserNotifier
 import com.blurt.tracker.util.AppSegment
 import com.blurt.tracker.util.BlockBuilder
 import com.blurt.tracker.util.Config
@@ -191,6 +192,35 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
     fun dismissSync() { _syncState.value = SyncState.Idle }
 
     /**
+     * 用户修正一个块的标签：
+     *  - 本地立刻应用 (manuallyCorrected=1)
+     *  - 异步推到电脑，让 LlmCorrectionExample 写入（影响未来 few-shot）
+     *  - 失败也没关系，本地修正不丢
+     */
+    fun correctBlock(blockId: Long, newLabel: String, newCategory: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            // 本地立刻应用
+            dao.applyCorrection(blockId, newLabel, newCategory)
+            val ctx = getApplication<Application>()
+            val baseUrl = Config.baseUrl(ctx) ?: return@launch
+            val day = _selectedDay.value
+            val dayEnd = day + DAY_MS
+            // 取出最新版以便拿 startTime + package
+            val blk = dao.getBlocksBetween(day, dayEnd).firstOrNull { it.id == blockId }
+                ?: return@launch
+            runCatching {
+                UploadClient.postCorrection(
+                    baseUrl = baseUrl,
+                    startTimeMs = blk.startTime,
+                    dominantAppPackage = blk.dominantAppPackage,
+                    userLabel = newLabel,
+                    userCategory = newCategory,
+                )
+            }
+        }
+    }
+
+    /**
      * 三步同步：
      *   1. 把当前查看日的块 push 给电脑
      *   2. 触发电脑跑 LLM 标签
@@ -250,7 +280,21 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 if (lab.activityLabel != null) updated++
             }
-            _syncState.value = SyncState.Finished(updated, "已写回 $updated 个标签")
+            // 找出还需要用户确认的块，弹系统通知
+            val pending = dao.getBlocksBetween(day, dayEnd)
+                .filter {
+                    !it.manuallyCorrected &&
+                        !it.askUser.isNullOrBlank() &&
+                        (it.confidence ?: 1f) < 0.7f
+                }
+            AskUserNotifier.show(ctx, pending)
+            _syncState.value = SyncState.Finished(
+                updated,
+                if (pending.isNotEmpty())
+                    "已写回 $updated 个标签，${pending.size} 个待你确认"
+                else
+                    "已写回 $updated 个标签",
+            )
         }
     }
 
