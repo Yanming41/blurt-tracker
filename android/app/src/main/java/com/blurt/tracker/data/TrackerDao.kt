@@ -83,4 +83,37 @@ interface TrackerDao {
 
     @Query("DELETE FROM mood_entries WHERE timestamp >= :since")
     suspend fun deleteMoodEntriesSince(since: Long)
+
+    // ---------- ActivityBlock ----------
+    @Insert
+    suspend fun insertActivityBlock(block: ActivityBlock): Long
+
+    @Insert
+    suspend fun insertActivityBlocks(blocks: List<ActivityBlock>): List<Long>
+
+    @Query("SELECT * FROM activity_blocks WHERE startTime BETWEEN :start AND :end ORDER BY startTime ASC")
+    fun observeBlocksBetween(start: Long, end: Long): Flow<List<ActivityBlock>>
+
+    @Query("SELECT * FROM activity_blocks WHERE startTime BETWEEN :start AND :end ORDER BY startTime ASC")
+    suspend fun getBlocksBetween(start: Long, end: Long): List<ActivityBlock>
+
+    /** 只删未被用户修正过的块（保留用户改过的标签） */
+    @Query("DELETE FROM activity_blocks WHERE startTime BETWEEN :start AND :end AND manuallyCorrected = 0")
+    suspend fun deleteAutoBlocksBetween(start: Long, end: Long)
+
+    @Query("DELETE FROM activity_blocks WHERE startTime >= :since")
+    suspend fun deleteAllBlocksSince(since: Long)
+
+    // ---------- Glance ----------
+    @Insert
+    suspend fun insertGlance(g: Glance): Long
+
+    @Insert
+    suspend fun insertGlances(gs: List<Glance>): List<Long>
+
+    @Query("SELECT * FROM glances WHERE timestamp BETWEEN :start AND :end ORDER BY timestamp ASC")
+    fun observeGlancesBetween(start: Long, end: Long): Flow<List<Glance>>
+
+    @Query("DELETE FROM glances WHERE timestamp BETWEEN :start AND :end")
+    suspend fun deleteGlancesBetween(start: Long, end: Long)
 }

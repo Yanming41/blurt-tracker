@@ -3,11 +3,14 @@ package com.blurt.tracker.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.blurt.tracker.data.ActivityBlock
+import com.blurt.tracker.data.Glance
 import com.blurt.tracker.data.LocationRecord
 import com.blurt.tracker.data.MoodEntry
 import com.blurt.tracker.data.ScreenEvent
 import com.blurt.tracker.data.TrackerDatabase
 import com.blurt.tracker.util.AppSegment
+import com.blurt.tracker.util.BlockBuilder
 import com.blurt.tracker.util.GeocoderHelper
 import com.blurt.tracker.util.UsageStatsHelper
 import kotlinx.coroutines.delay
@@ -47,6 +50,14 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
 
     val moodEntries: StateFlow<List<MoodEntry>> =
         dao.observeMoodEntriesBetween(dayStart, dayEnd)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val activityBlocks: StateFlow<List<ActivityBlock>> =
+        dao.observeBlocksBetween(dayStart, dayEnd)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val glances: StateFlow<List<Glance>> =
+        dao.observeGlancesBetween(dayStart, dayEnd)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _summary = MutableStateFlow(TodaySummary())
@@ -131,8 +142,32 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
             // ---- 2. 屏幕事件：从系统 UsageEvents 全量回收 ----
             syncScreenEventsFromUsageEvents(ctx)
 
+            // ---- 3. 切块：纯规则跑 BlockBuilder，写入 activity_blocks / glances ----
+            rebuildActivityBlocks(segments)
+
             recomputeSummary(segments, screenEvents.value, locationRecords.value)
         }
+    }
+
+    /**
+     * 把今日的自动块与瞥一眼全删了重建。
+     * 用户手动修正过的块（manuallyCorrected=1）不删，下次重建时会和新块共存
+     * —— Phase 3 引入时再做 merge 逻辑。
+     */
+    private suspend fun rebuildActivityBlocks(segments: List<AppSegment>) {
+        val day0 = UsageStatsHelper.startOfToday()
+        val dayEnd = day0 + DAY_MS
+        dao.deleteAutoBlocksBetween(day0, dayEnd)
+        dao.deleteGlancesBetween(day0, dayEnd)
+        val result = BlockBuilder.build(
+            segments = segments,
+            screenEvents = screenEvents.value,
+            locations = locationRecords.value,
+        )
+        if (result.blocks.isNotEmpty()) dao.insertActivityBlocks(result.blocks)
+        if (result.glances.isNotEmpty()) dao.insertGlances(result.glances)
+        android.util.Log.i("BLURT_DEBUG",
+            "[rebuildBlocks] segments=${segments.size}  blocks=${result.blocks.size}  glances=${result.glances.size}")
     }
 
     /**

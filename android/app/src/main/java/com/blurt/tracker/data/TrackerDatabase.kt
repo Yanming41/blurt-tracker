@@ -6,8 +6,11 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [AppRecord::class, LocationRecord::class, ScreenEvent::class, MoodEntry::class],
-    version = 3,
+    entities = [
+        AppRecord::class, LocationRecord::class, ScreenEvent::class, MoodEntry::class,
+        ActivityBlock::class, Glance::class,
+    ],
+    version = 4,
     exportSchema = false,
 )
 abstract class TrackerDatabase : RoomDatabase() {

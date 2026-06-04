@@ -50,8 +50,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.blurt.tracker.data.ActivityBlock
+import com.blurt.tracker.data.Glance
 import com.blurt.tracker.data.LocationRecord
 import com.blurt.tracker.data.ScreenEvent
+import com.blurt.tracker.util.AppCategory
 import com.blurt.tracker.util.AppSegment
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -80,6 +83,37 @@ private fun paletteFor(pkg: String, appName: String): AppPalette {
 private val IdleGray = Color(0x4D9E9E9E)
 private val LocationDot = Color(0xFF4CAF50)
 private val NowLineColor = Color(0xFFE53935)
+
+/** 类别 -> 颜色：跟 Q5 的约定一致 */
+private fun categoryPalette(category: String): AppPalette = when (category) {
+    AppCategory.WORK          -> AppPalette(Color(0xFFE3F2FD), Color(0xFF1976D2)) // 蓝
+    AppCategory.LEARN         -> AppPalette(Color(0xFFE8F5E9), Color(0xFF388E3C)) // 绿
+    AppCategory.SOCIAL        -> AppPalette(Color(0xFFFFF59D), Color(0xFFF9A825)) // 黄
+    AppCategory.ENTERTAINMENT -> AppPalette(Color(0xFFFFCCBC), Color(0xFFE64A19)) // 橙红
+    AppCategory.COMMUTE       -> AppPalette(Color(0xFFE1BEE7), Color(0xFF7B1FA2)) // 紫
+    AppCategory.ADMIN         -> AppPalette(Color(0xFFE0E0E0), Color(0xFF616161)) // 灰
+    else                      -> AppPalette(Color(0xFFF5F5F5), Color(0xFFBDBDBD)) // 浅灰
+}
+
+private fun categoryEmoji(category: String): String = when (category) {
+    AppCategory.WORK          -> "💼"
+    AppCategory.LEARN         -> "📚"
+    AppCategory.SOCIAL        -> "💬"
+    AppCategory.ENTERTAINMENT -> "🎮"
+    AppCategory.COMMUTE       -> "🚗"
+    AppCategory.ADMIN         -> "🏦"
+    else                      -> "❓"
+}
+
+private fun categoryDisplay(category: String): String = when (category) {
+    AppCategory.WORK          -> "工作"
+    AppCategory.LEARN         -> "学习"
+    AppCategory.SOCIAL        -> "社交"
+    AppCategory.ENTERTAINMENT -> "娱乐"
+    AppCategory.COMMUTE       -> "通勤"
+    AppCategory.ADMIN         -> "事务"
+    else                      -> "其他"
+}
 
 // 时间轴布局常量
 private val SCALE_WIDTH = 48.dp
@@ -132,6 +166,8 @@ fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
     val locations by vm.locationRecords.collectAsState()
     val screens by vm.screenEvents.collectAsState()
     val summary by vm.todaySummary.collectAsState()
+    val blocks by vm.activityBlocks.collectAsState()
+    val glances by vm.glances.collectAsState()
 
     LaunchedEffect(Unit) { vm.refresh() }
 
@@ -144,6 +180,8 @@ fun TimelineScreen(vm: TimelineViewModel = viewModel()) {
         HorizontalDivider()
         TimelineCanvas(
             segments = segments,
+            blocks = blocks,
+            glances = glances,
             locations = locations,
             screens = screens,
             onSegmentClick = { sheetSegment = it },
@@ -197,11 +235,20 @@ private fun StatCell(label: String, value: String, modifier: Modifier = Modifier
 @Composable
 private fun TimelineCanvas(
     segments: List<AppSegment>,
+    blocks: List<ActivityBlock>,
+    glances: List<Glance>,
     locations: List<LocationRecord>,
     screens: List<ScreenEvent>,
     onSegmentClick: (AppSegment) -> Unit,
     onLocationClick: (LocationRecord) -> Unit,
 ) {
+    // 跟踪用户点开了哪些块（展开则显示内部碎片）
+    val expandedBlocks = remember { mutableStateOf<Set<Long>>(emptySet()) }
+    fun toggleExpand(id: Long) {
+        expandedBlocks.value = expandedBlocks.value.toMutableSet().apply {
+            if (!add(id)) remove(id)
+        }
+    }
     val scroll = rememberScrollState()
     val totalHours = TimelineViewModel.TIMELINE_END_HOUR - TimelineViewModel.TIMELINE_START_HOUR
     val dayStart = TimelineViewModel.startOfToday()
@@ -228,8 +275,14 @@ private fun TimelineCanvas(
         scroll.scrollTo(target)
     }
 
-    // 泳道分配
-    val positioned = remember(segments) { assignLanes(segments) }
+    // 展开块内 segments 的泳道分配（按需）
+    val expandedIds = expandedBlocks.value
+    val expandedSegments = remember(segments, blocks, expandedIds) {
+        val rangeList = blocks.filter { it.id in expandedIds }
+            .map { it.startTime..it.endTime }
+        segments.filter { seg -> rangeList.any { seg.startTime in it } }
+    }
+    val positioned = remember(expandedSegments) { assignLanes(expandedSegments) }
     val maxLanes = positioned.maxOfOrNull { it.totalLanes } ?: 1
 
     // 外层 Box 用来叠放：可滚动的时间轴 + 浮动缩放按钮
@@ -241,7 +294,8 @@ private fun TimelineCanvas(
         ) {
             val plotWidth = maxWidth - LINE_X - EVENT_LEFT_PADDING - RIGHT_PADDING
             val laneGap = 4.dp
-            val laneWidth = (plotWidth - laneGap * (maxLanes - 1)) / maxLanes
+            val laneWidth = if (maxLanes > 0)
+                (plotWidth - laneGap * (maxLanes - 1)) / maxLanes else plotWidth
 
             Box(
                 Modifier.fillMaxWidth().height(totalHeight),
@@ -257,7 +311,19 @@ private fun TimelineCanvas(
                 )
             }
 
-            // App 段卡片（按泳道）
+            // 主视图：彩色活动块
+            blocks.forEach { blk ->
+                ActivityBlockCard(
+                    block = blk,
+                    zeroMs = zeroMs,
+                    hourHeightDp = hourHeightDp,
+                    width = plotWidth,
+                    expanded = blk.id in expandedIds,
+                    onClick = { toggleExpand(blk.id) },
+                )
+            }
+
+            // 展开块内：内部 segments（按泳道并排，半透明）
             positioned.forEach { ps ->
                 val xOff = LINE_X + EVENT_LEFT_PADDING +
                     (laneWidth + laneGap) * ps.lane
@@ -269,6 +335,9 @@ private fun TimelineCanvas(
                     width = laneWidth,
                 ) { onSegmentClick(ps.seg) }
             }
+
+            // 「瞥一眼」事件：左侧小圆点
+            glances.forEach { g -> GlanceDot(g, zeroMs, hourHeightDp) }
 
             // 位置点
             locations.forEach { loc ->
@@ -407,6 +476,72 @@ private fun TimeScaleCanvas(totalHours: Int, hourHeightDp: Float) {
             }
         }
     }
+}
+
+@Composable
+private fun ActivityBlockCard(
+    block: ActivityBlock,
+    zeroMs: Long,
+    hourHeightDp: Float,
+    width: androidx.compose.ui.unit.Dp,
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    val yDp = msToDpValue(block.startTime - zeroMs, hourHeightDp).dp.coerceAtLeast(0.dp)
+    val heightDp = msToDpValue(block.durationMs, hourHeightDp).dp.coerceAtLeast(28.dp)
+    val palette = categoryPalette(block.category)
+    val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val alpha = if (expanded) 0.35f else 1.0f
+    Box(
+        modifier = Modifier
+            .offset(x = LINE_X + EVENT_LEFT_PADDING, y = yDp)
+            .width(width)
+            .height(heightDp)
+            .background(palette.fill.copy(alpha = alpha), RoundedCornerShape(10.dp))
+            .drawBehind {
+                drawRoundRect(
+                    color = palette.border,
+                    style = Stroke(width = 2.dp.toPx()),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(10.dp.toPx()),
+                )
+            }
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        contentAlignment = Alignment.TopStart,
+    ) {
+        Column {
+            val label = block.activityLabel
+                ?: "${categoryEmoji(block.category)} ${categoryDisplay(block.category)}"
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = palette.border,
+                maxLines = 1,
+            )
+            if (heightDp >= 48.dp) {
+                Text(
+                    text = "${timeFmt.format(Date(block.startTime))}–${timeFmt.format(Date(block.endTime))}  ·  " +
+                        "${formatHM(block.durationMs)}  ·  ${block.dominantAppName}" +
+                        if (block.interruptionCount > 0) "  ·  打扰${block.interruptionCount}次" else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.border.copy(alpha = 0.85f),
+                    maxLines = 2,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GlanceDot(g: Glance, zeroMs: Long, hourHeightDp: Float) {
+    val yDp = msToDpValue(g.timestamp - zeroMs, hourHeightDp).dp - 3.dp
+    Box(
+        modifier = Modifier
+            .offset(x = LINE_X - 14.dp, y = yDp)
+            .width(6.dp).height(6.dp)
+            .background(Color(0xFF9E9E9E), RoundedCornerShape(50)),
+    )
 }
 
 @Composable
