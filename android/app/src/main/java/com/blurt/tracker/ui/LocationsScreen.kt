@@ -109,6 +109,16 @@ private fun BackfillBar(
                         }
                     },
                 ) { Text("🔬 Dump UsageEvents → Logcat") }
+                Spacer(Modifier.height(6.dp))
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                DebugTools.dumpTodayBlocks(ctx)
+                            }
+                        }
+                    },
+                ) { Text("🐛 Dump 今日 Blocks → Logcat") }
             }
         }
         is TimelineViewModel.BackfillState.Running -> {

@@ -38,6 +38,39 @@ object DebugTools {
         18 to "KEYGUARD_SHOWN",
     )
 
+    /**
+     * Dump 当天所有 ActivityBlock 的真实字段值，用于排查渲染异常。
+     */
+    suspend fun dumpTodayBlocks(ctx: Context) {
+        val tf = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.getDefault())
+        val day0 = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val dayEnd = day0 + 24 * 3600_000L
+        val now = System.currentTimeMillis()
+
+        val dao = com.blurt.tracker.data.TrackerDatabase.get(ctx).trackerDao()
+        val blocks = dao.getBlocksBetween(day0, dayEnd)
+
+        Log.i(TAG, "================ Today Blocks Dump ================")
+        Log.i(TAG, "now=${tf.format(Date(now))}  rawMs=$now")
+        Log.i(TAG, "day0=${tf.format(Date(day0))}  rawMs=$day0  TZ=${java.util.TimeZone.getDefault().id}")
+        Log.i(TAG, "total blocks today: ${blocks.size}")
+
+        for ((i, b) in blocks.withIndex()) {
+            val offsetMin = (b.startTime - day0) / 60_000L
+            Log.i(TAG, "----- block #$i (id=${b.id}) -----")
+            Log.i(TAG, "  startTime  raw=${b.startTime}  fmt=${tf.format(Date(b.startTime))}  offsetFromDay0=${offsetMin}min")
+            Log.i(TAG, "  endTime    raw=${b.endTime}    fmt=${tf.format(Date(b.endTime))}")
+            Log.i(TAG, "  durationMs=${b.durationMs}  (${b.durationMs / 60_000L}min)  totalAppMs=${b.totalAppTimeMs}")
+            Log.i(TAG, "  category=${b.category}  dom=${b.dominantAppName}(${b.dominantAppPackage})")
+            Log.i(TAG, "  label=${b.activityLabel}  conf=${b.confidence}  manuallyCorr=${b.manuallyCorrected}")
+            Log.i(TAG, "  interruptions=${b.interruptionCount}")
+        }
+        Log.i(TAG, "===================================================")
+    }
+
     suspend fun dumpUsageEventsLast24h(ctx: Context) {
         val tf = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
         Log.i(TAG, "================ UsageEvents Validation ================")
