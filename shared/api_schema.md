@@ -45,6 +45,25 @@
 
 ---
 
+## 2.5 POST `/mobile/screen-event`
+手机端上报一次屏幕事件（亮屏 / 息屏 / 解锁）。
+
+请求体：
+```json
+{
+  "event_type": "亮屏",
+  "timestamp": 1717056000
+}
+```
+- `event_type` 必须是 `"亮屏"`、`"息屏"`、`"解锁"` 之一
+- `timestamp` 为 unix epoch 秒数
+
+响应 `201`：`{ "id": 789 }`
+
+错误 `400`：`event_type` 不合法。
+
+---
+
 ## 3. GET `/timeline/today`
 返回今日完整时间线（电脑 + 手机 + 位置），按时间升序排列。
 
